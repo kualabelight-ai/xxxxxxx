@@ -1,234 +1,200 @@
 import streamlit as st
 import re
 import json
-from pathlib import Path
 from datetime import datetime
 import pandas as pd
-from typing import Dict, List, Tuple, Optional, Set, Any, Union
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from collections import defaultdict
+import uuid
+import time
+from enum import Enum
+from io import BytesIO
+
+# ====================== ОСНОВНЫЕ СТРУКТУРЫ ДАННЫХ ======================
+
+class TransformationType(Enum):
+    VARIABLE_REPLACE = "variable_replace"
+    UNIT_REMOVED = "unit_removed"
+    SPECIAL_SYMBOL_REMOVED = "special_symbol_removed"
+    AUTO_INSERT = "auto_insert"
+    WARNING = "warning"
+    ERROR = "error"
+    MANUAL_CORRECTION = "manual_correction"
+    HTML_GENERATION = "html_generation"
+
+
+class SeverityLevel(Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    SUCCESS = "success"
+
+
+@dataclass
+class TextTransformation:
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    block_id: str = ""
+    fragment_name: str = ""
+    transformation_type: TransformationType = TransformationType.MANUAL_CORRECTION
+    original: str = ""
+    result: str = ""
+    start: int = -1
+    end: int = -1
+    meta: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+    severity: SeverityLevel = SeverityLevel.INFO
+    user: str = "system"
+
+    def to_dict(self) -> Dict:
+        return {
+            'id': self.id,
+            'block_id': self.block_id,
+            'fragment_name': self.fragment_name,
+            'transformation_type': self.transformation_type.value,
+            'original': self.original,
+            'result': self.result,
+            'start': self.start,
+            'end': self.end,
+            'meta': self.meta,
+            'timestamp': self.timestamp.isoformat(),
+            'severity': self.severity.value,
+            'user': self.user
+        }
+
+
+class TransformationRegistry:
+    def __init__(self):
+        self.transformations: List[TextTransformation] = []
+        self._block_index: Dict[str, List[TextTransformation]] = defaultdict(list)
+        self._fragment_index: Dict[str, List[TextTransformation]] = defaultdict(list)
+
+    def add(self, transformation: TextTransformation):
+        self.transformations.append(transformation)
+        self._block_index[transformation.block_id].append(transformation)
+        self._fragment_index[transformation.fragment_name].append(transformation)
+
+    def get_by_block_id(self, block_id: str) -> List[TextTransformation]:
+        return self._block_index.get(block_id, [])
+
+    def get_by_fragment(self, fragment_name: str) -> List[TextTransformation]:
+        return self._fragment_index.get(fragment_name, [])
+
+    def get_errors(self) -> List[TextTransformation]:
+        return [t for t in self.transformations if t.severity == SeverityLevel.ERROR]
+
+    def get_warnings(self) -> List[TextTransformation]:
+        return [t for t in self.transformations if t.severity == SeverityLevel.WARNING]
+
+    def clear(self):
+        self.transformations.clear()
+        self._block_index.clear()
+        self._fragment_index.clear()
 
 
 class VariableManager:
-    """Управление системными переменными"""
-
     def __init__(self):
-        self.variables_dir = Path("config/variables")
-        self.variables_dir.mkdir(parents=True, exist_ok=True)
+        self.prefixes = {"prop": "prop", "system": "system", "fragment": "fragment"}
 
-        # Дефолтные переменные
-        self.default_system_vars = {
+        self.system_vars = {
             "город": {
-                "variants": [
-                    {"value": "{system городе}", "context": "в [город]е"},
-                    {"value": "{system по_городу}", "context": "по [город]у"},
-                    {"value": "{system город}", "context": "[город]"}
-                ],
-                "description": "Название города"
+                "variants": ["{system город}", "{system городе}", "{system по_городу}"],
+                "description": "Название города с вариантами падежей"
             },
             "название товара": {
-                "variants": [{"value": "{system название_товара}", "context": ""}],
+                "variants": ["{system название_товара}"],
                 "description": "Название товара"
             },
             "цена": {
-                "variants": [{"value": "{system цена_товара}, руб.", "context": ""}],
+                "variants": ["{system цена_товара}, руб."],
                 "description": "Цена товара"
             },
             "единица измерения": {
-                "variants": [{"value": "{system количество}", "context": ""}],
+                "variants": ["{system количество}"],
                 "description": "Единица измерения"
             },
             "телефон": {
-                "variants": [{"value": "8 495 969-51-08", "context": ""}],
+                "variants": ["8 495 969-51-08"],
                 "description": "Телефон компании"
             },
             "email": {
-                "variants": [{"value": "msk@steelborg.ru", "context": ""}],
+                "variants": ["msk@steelborg.ru"],
                 "description": "Email компании"
             },
             "компания": {
-                "variants": [{"value": "Steelborg", "context": ""}],
+                "variants": ["Steelborg"],
                 "description": "Название компании"
             },
             "категория РП": {
-                "variants": [{"value": "{system название_категории_РП}", "context": ""}],
+                "variants": ["{system название_категории_РП}"],
                 "description": "Категория в родительном падеже"
             },
             "категория ВП": {
-                "variants": [{"value": "{system название_категории_ВП}", "context": ""}],
+                "variants": ["{system название_категории_ВП}"],
                 "description": "Категория в винительном падеже"
             },
             "категория ИП": {
-                "variants": [{"value": "{system название_категории}", "context": ""}],
+                "variants": ["{system название_категории}"],
                 "description": "Категория в именительном падеже"
+            },
+            "сайт": {
+                "variants": ["steelborg.ru"],
+                "description": "Сайт компании"
+            },
+            "адрес": {
+                "variants": ["г. Москва, ул. Примерная, д. 1"],
+                "description": "Адрес компании"
+            },
+            "рабочие часы": {
+                "variants": ["пн-пт с 9:00 до 18:00"],
+                "description": "Рабочие часы"
             }
         }
 
-        self.system_vars = {}
-        self.load_variables()
+    def get_variable_suggestions(self) -> List[Dict]:
+        suggestions = []
+        for name, data in self.system_vars.items():
+            for variant in data.get("variants", []):
+                suggestions.append({
+                    "type": "system",
+                    "name": name,
+                    "value": variant,
+                    "description": data.get("description", f"Системная переменная: {name}")
+                })
+        suggestions.extend([
+            {"type": "prop", "name": "prop", "value": "{prop }", "description": "Свойство характеристики"},
+            {"type": "fragment", "name": "fragment", "value": "{fragment }", "description": "Фрагмент текста"}
+        ])
+        return suggestions
 
-    def load_variables(self):
-        """Загружает переменные из файла или создает дефолтные"""
-        var_file = self.variables_dir / "system_variables.json"
-
-        if var_file.exists():
-            try:
-                with open(var_file, 'r', encoding='utf-8') as f:
-                    self.system_vars = json.load(f)
-            except:
-                self.system_vars = self.default_system_vars
-                self.save_variables()
-        else:
-            self.system_vars = self.default_system_vars
-            self.save_variables()
-
-    def save_variables(self):
-        """Сохраняет переменные в файл"""
-        var_file = self.variables_dir / "system_variables.json"
-        with open(var_file, 'w', encoding='utf-8') as f:
-            json.dump(self.system_vars, f, ensure_ascii=False, indent=2)
-
-    def get_variable_variants(self, var_name: str) -> List[Dict]:
-        """Возвращает варианты для переменной"""
-        var_info = self.system_vars.get(var_name)
-        if var_info:
-            return var_info.get("variants", [])
-        return []
-
-    def get_best_variant(self, var_name: str, context: str) -> str:
-        """Выбирает лучший вариант переменной по контексту"""
-        variants = self.get_variable_variants(var_name)
-        if not variants:
-            return f"{{system {var_name}}}"
-
-        if len(variants) == 1:
-            return variants[0]["value"]
-
-        context_lower = context.lower()
-        for variant in variants:
-            variant_context = variant.get("context", "").lower()
-            if variant_context and variant_context in context_lower:
-                return variant["value"]
-
-        return variants[0]["value"]
-
-    def add_variable(self, name: str, variants: List[Dict], description: str = ""):
-        """Добавляет новую переменную"""
-        self.system_vars[name] = {
-            "variants": variants,
-            "description": description
-        }
-        self.save_variables()
-
-    def edit_variable(self, old_name: str, new_name: str, variants: List[Dict], description: str = ""):
-        """Редактирует переменную"""
-        if old_name in self.system_vars:
-            self.system_vars[new_name] = {
-                "variants": variants,
-                "description": description
-            }
-            if old_name != new_name:
-                del self.system_vars[old_name]
-            self.save_variables()
-
-    def delete_variable(self, name: str):
-        """Удаляет переменную"""
-        if name in self.system_vars:
-            del self.system_vars[name]
-            self.save_variables()
-
-
-class TextProcessor:
-    """Обработка текстов и вставка переменных"""
-
-    def __init__(self, variable_manager: VariableManager):
-        self.vm = variable_manager
-        self.pattern = re.compile(r'\[([^\]]+)\]')
-
-    def extract_variables(self, text: str) -> List[Tuple[str, int, int]]:
-        """Извлекает все переменные из текста в формате [переменная]"""
-        matches = []
-        for match in self.pattern.finditer(text):
-            var_name = match.group(1).strip()
-            start, end = match.span()
-            matches.append((var_name, start, end))
-        return matches
-
-    def process_block(self, block: Dict, characteristics: List[Dict]) -> Dict:
-        """Обрабатывает один текстовый блок"""
-        original_text = block.get("edited_text", "")
-        block_type = block.get("type", "")
-        char_name = block.get("characteristic_name", "")
-        char_value = block.get("characteristic_value", "")
-
-        variables = self.extract_variables(original_text)
-        processed_text = original_text
-        replacements = []
-        errors = []
-        warnings = []
-        offset = 0
-
-        for var_name, start, end in variables:
-            original_var = original_text[start:end]
-
-            if block_type == "regular":
-                if not char_name:
-                    errors.append(f"Regular блок без characteristic_name: {original_var}")
-                    replacement = f"{{prop {var_name}}}"
-                else:
-                    char_found = False
-                    for char in characteristics:
-                        if char.get("name") == char_name or char.get("value") == var_name:
-                            replacement = f"{{prop {char_name}}}"
-                            char_found = True
-                            break
-
-                    if not char_found:
-                        errors.append(f"Не найдена характеристика '{char_name}' для: {original_var}")
-                        replacement = f"{{prop {char_name}}}"
-            else:
-                replacement = self.vm.get_best_variant(var_name, original_text[max(0, start - 10):end + 10])
-
-            new_start = start + offset
-            new_end = end + offset
-            processed_text = processed_text[:new_start] + replacement + processed_text[new_end:]
-            offset += len(replacement) - (end - start)
-
-            replacements.append({
-                "original": original_var,
-                "replacement": replacement,
-                "position": (start, end)
-            })
-
-        if block_type == "regular" and not variables:
-            errors.append("Regular блок должен содержать хотя бы одну переменную в квадратных скобках []")
-
-        return {
-            "original_text": original_text,
-            "processed_text": processed_text,
-            "replacements": replacements,
-            "errors": errors,
-            "warnings": warnings,
-            "has_errors": len(errors) > 0,
-            "has_warnings": len(warnings) > 0,
-            "variables_count": len(variables)
-        }
+    def format_variable(self, var_type: str, var_name: str) -> str:
+        if var_type == "system":
+            return f"{{{self.prefixes['system']} {var_name}}}"
+        elif var_type == "prop":
+            return f"{{{self.prefixes['prop']} {var_name}}}"
+        elif var_type == "fragment":
+            return f"{{{self.prefixes['fragment']} {var_name}}}"
+        return var_name
 
 
 @dataclass
 class FragmentBlock:
-    """Класс для хранения информации о блоке фрагмента"""
     id: str
-    fragment_name: str  # Название блока (например: Категория_Диаметр)
+    fragment_name: str
     original_text: str
     processed_text: str
-    block_type: str  # regular, unique, other
+    block_type: str
+    html_text: str = ""
     characteristic_name: Optional[str] = None
     characteristic_value: Optional[str] = None
-    category: Optional[str] = None
-    properties: List[Dict] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    status: str = "pending"
+    manual_correction: Optional[str] = None
+    auto_corrected: bool = False
+    added_value: Optional[str] = None
+    special_symbols: List[Tuple[str, int, int]] = field(default_factory=list)
+    last_modified: datetime = field(default_factory=datetime.now)
 
     def to_dict(self):
         return {
@@ -236,1146 +202,1722 @@ class FragmentBlock:
             'fragment_name': self.fragment_name,
             'original_text': self.original_text,
             'processed_text': self.processed_text,
+            'html_text': self.html_text,
             'block_type': self.block_type,
             'characteristic_name': self.characteristic_name,
             'characteristic_value': self.characteristic_value,
-            'category': self.category,
-            'properties': self.properties,
             'errors': self.errors,
-            'warnings': self.warnings
+            'warnings': self.warnings,
+            'status': self.status,
+            'manual_correction': self.manual_correction,
+            'auto_corrected': self.auto_corrected,
+            'added_value': self.added_value,
+            'special_symbols': self.special_symbols,
+            'last_modified': self.last_modified.isoformat()
         }
-
-
-class EnhancedTextProcessor(TextProcessor):
-    """Расширенный процессор текстов с автоматической подстановкой"""
-
-    def __init__(self, variable_manager: VariableManager):
-        super().__init__(variable_manager)
-
-    def smart_process_block(self, block: Dict, characteristics: List[Dict]) -> Dict:
-        """Умная обработка блока с автоматической подстановкой"""
-
-        original_text = block.get("edited_text", "")
-        block_type = block.get("type", "")
-        char_name = block.get("characteristic_name", "")
-        char_value = block.get("characteristic_value", "")
-
-        # Извлекаем переменные
-        variables = self.extract_variables(original_text)
-
-        # Если нет переменных в regular блоке, пытаемся найти значение
-        if block_type == 'regular' and not variables and char_name:
-            # Ищем соответствующее значение в характеристиках
-            matching_chars = []
-            for char in characteristics:
-                if char.get("name") == char_name:
-                    # Нашли характеристику, теперь ищем значения
-                    char_data = char.get("data", {})
-                    if isinstance(char_data, dict):
-                        # Для словаря значений
-                        for key, value in char_data.items():
-                            if key and value:
-                                matching_chars.append({
-                                    'name': char_name,
-                                    'value': value,
-                                    'key': key
-                                })
-                    elif isinstance(char_data, list):
-                        # Для списка значений
-                        for item in char_data:
-                            if isinstance(item, dict) and 'value' in item:
-                                matching_chars.append({
-                                    'name': char_name,
-                                    'value': item['value'],
-                                    'key': item.get('key', '')
-                                })
-
-            # Если нашли значения, формируем варианты подстановки
-            if matching_chars:
-                # Создаем несколько вариантов текста
-                variants = []
-                for match in matching_chars:
-                    # Формируем текст с подстановкой
-                    variant_text = original_text + f" [{match['value']}]"
-                    variants.append({
-                        'text': variant_text,
-                        'value': match['value'],
-                        'key': match['key']
-                    })
-
-                return {
-                    'original_text': original_text,
-                    'processed_text': '',  # Будет определен позже
-                    'variants': variants,
-                    'has_variants': True,
-                    'char_name': char_name,
-                    'char_values': [v['value'] for v in variants],
-                    'errors': [],
-                    'warnings': ["Найдены возможные значения для подстановки"]
-                }
-
-        # Обычная обработка
-        return self.process_block(block, characteristics)
 
 
 class FragmentManager:
-    """Управление фрагментами и их свойствами"""
-
     def __init__(self, category: str):
         self.category = category
         self.fragments: List[FragmentBlock] = []
-        self.fragment_names: Set[str] = set()  # Уникальные названия фрагментов
-        self.fragment_properties: Dict[str, List[Dict]] = defaultdict(list)  # fragment_name -> свойства
-        self.template_order: List[str] = []  # Порядок фрагментов в шаблоне
+        self.fragment_names: set = set()
+        self.template_order: List[str] = []
+        self.fragment_properties: Dict[str, List[Dict]] = defaultdict(list)
 
     def add_block(self, block_data: Dict) -> FragmentBlock:
-        """Добавляет блок и формирует его название по правилам"""
-
-        # Определяем базовое название по типу блока
-        if block_data.get('type') == 'regular':
-            # Regular: Категория_характеристика
-            char_name = block_data.get('characteristic_name', '')
-            fragment_name = f"{self.category}_{char_name}" if char_name else f"{self.category}_unknown"
-
-        elif block_data.get('type') == 'unique':
-            # Unique: Категория_характеристика_значение
-            char_name = block_data.get('characteristic_name', '')
-            char_value = block_data.get('characteristic_value', '')
-
-            # Очищаем значение для использования в названии
-            clean_value = self._clean_value_for_name(char_value)
-
-            if char_name and clean_value:
-                fragment_name = f"{self.category}_{char_name}_{clean_value}"
-            elif char_name:
-                fragment_name = f"{self.category}_{char_name}"
-            else:
-                fragment_name = f"{self.category}_unique_unknown"
-
-        else:  # other
-            # Other: Категория_название_блока
-            block_name = block_data.get('block_name', '')
-            if block_name:
-                clean_name = self._clean_value_for_name(block_name)
-                fragment_name = f"{self.category}_{clean_name}"
-            else:
-                fragment_name = f"{self.category}_other"
-
-        # Создаем объект блока
         fragment_block = FragmentBlock(
-            id=block_data.get('id', f"block_{len(self.fragments)}"),
-            fragment_name=fragment_name,
+            id=block_data.get('id', str(uuid.uuid4())),
+            fragment_name=block_data['fragment_name'],
             original_text=block_data.get('original_text', ''),
             processed_text=block_data.get('processed_text', ''),
-            block_type=block_data.get('type', 'unknown'),
+            block_type=block_data.get('block_type', 'unknown'),
+            html_text=block_data.get('html_text', ''),
             characteristic_name=block_data.get('characteristic_name'),
             characteristic_value=block_data.get('characteristic_value'),
-            category=self.category,
             errors=block_data.get('errors', []),
-            warnings=block_data.get('warnings', [])
+            warnings=block_data.get('warnings', []),
+            status=block_data.get('status', 'pending'),
+            auto_corrected=block_data.get('auto_corrected', False),
+            added_value=block_data.get('added_value'),
+            special_symbols=block_data.get('special_symbols', [])
         )
-
-        # Формируем свойства фрагмента
-        self._extract_properties(fragment_block)
-
-        # Добавляем блок
         self.fragments.append(fragment_block)
-        self.fragment_names.add(fragment_name)
-
+        self.fragment_names.add(fragment_block.fragment_name)
+        self._extract_properties(fragment_block)
         return fragment_block
 
-    def _clean_value_for_name(self, value: str) -> str:
-        """Очищает значение для использования в названии фрагмента"""
-        if not value:
-            return ""
-
-        # Заменяем недопустимые символы на _
-        cleaned = re.sub(r'[^\w\s-]', '', value.lower())
-        cleaned = re.sub(r'[\s-]+', '_', cleaned)
-        cleaned = cleaned.strip('_')
-
-        # Ограничиваем длину
-        if len(cleaned) > 50:
-            cleaned = cleaned[:50]
-
-        return cleaned
-
-    def update_template_order(self, old_name: str, new_name: str):
-        """Обновляет порядок фрагментов при переименовании"""
-        if old_name in self.template_order:
-            index = self.template_order.index(old_name)
-            self.template_order[index] = new_name
-
-    def remove_from_template_order(self, fragment_names: List[str]):
-        """Удаляет фрагменты из порядка"""
-        self.template_order = [name for name in self.template_order if name not in fragment_names]
-
-    def add_to_template_order(self, fragment_name: str, position: int = -1):
-        """Добавляет фрагмент в порядок"""
-        if fragment_name not in self.template_order:
-            if position == -1:
-                self.template_order.append(fragment_name)
-            else:
-                self.template_order.insert(position, fragment_name)
     def _extract_properties(self, fragment: FragmentBlock):
-        """Извлекает свойства из фрагмента"""
-        properties = []
+        if fragment.block_type == 'regular' and fragment.characteristic_name:
+            self.fragment_properties[fragment.fragment_name].append({
+                'characteristic': fragment.characteristic_name,
+                'value': None,
+                'is_unique': False
+            })
+        elif fragment.block_type == 'unique' and fragment.characteristic_name and fragment.characteristic_value:
+            self.fragment_properties[fragment.fragment_name].append({
+                'characteristic': fragment.characteristic_name,
+                'value': fragment.characteristic_value,
+                'is_unique': True
+            })
 
-        if fragment.block_type == 'regular':
-            # Для regular: характеристика без значения (значение будет подставляться)
-            if fragment.characteristic_name:
-                properties.append({
-                    'characteristic': fragment.characteristic_name,
-                    'value': None,  # Значение будет из данных товара
-                    'is_unique': False
-                })
-
-        elif fragment.block_type == 'unique':
-            # Для unique: характеристика и уникальное значение
-            if fragment.characteristic_name and fragment.characteristic_value:
-                properties.append({
-                    'characteristic': fragment.characteristic_name,
-                    'value': fragment.characteristic_value,
-                    'is_unique': True
-                })
-
-        # Добавляем свойства в фрагмент и в общий пул
-        fragment.properties = properties
-        for prop in properties:
-            self.fragment_properties[fragment.fragment_name].append(prop)
-
-    def merge_fragments(self, fragment_names: List[str], new_name: str):
-        """Склеивает несколько фрагментов в один"""
-        if not fragment_names or len(fragment_names) < 2:
-            return False
-
-        # Проверяем, что все фрагменты существуют
-        for frag_name in fragment_names:
-            if frag_name not in self.fragment_names:
-                return False
-
-        # Обновляем названия у соответствующих блоков
-        for fragment in self.fragments:
-            if fragment.fragment_name in fragment_names:
-                fragment.fragment_name = new_name
-
-        # Обновляем список уникальных названий
-        self.fragment_names.difference_update(fragment_names)
-        self.fragment_names.add(new_name)
-
-        # Обновляем свойства
-        merged_properties = []
-        for frag_name in fragment_names:
-            if frag_name in self.fragment_properties:
-                merged_properties.extend(self.fragment_properties[frag_name])
-                del self.fragment_properties[frag_name]
-
-        if merged_properties:
-            self.fragment_properties[new_name] = merged_properties
-
-        # Обновляем порядок в шаблоне
-        # Находим первую позицию из сливаемых фрагментов
-        positions = [i for i, name in enumerate(self.template_order) if name in fragment_names]
-        if positions:
-            first_position = min(positions)
-            # Удаляем старые названия
-            self.template_order = [name for name in self.template_order if name not in fragment_names]
-            # Вставляем новое название на позицию первого удаленного
-            self.template_order.insert(first_position, new_name)
-        else:
-            # Если не нашли в порядке, добавляем в конец
-            self.template_order.append(new_name)
-
-        return True
-
-    def rename_fragment(self, old_name: str, new_name: str):
-        """Переименовывает фрагмент"""
+    def rename_fragment(self, old_name: str, new_name: str) -> bool:
         if old_name not in self.fragment_names:
             return False
-
-        # Обновляем названия у блоков
         for fragment in self.fragments:
             if fragment.fragment_name == old_name:
                 fragment.fragment_name = new_name
-
-        # Обновляем списки
         self.fragment_names.remove(old_name)
         self.fragment_names.add(new_name)
-
-        # Обновляем свойства
         if old_name in self.fragment_properties:
             self.fragment_properties[new_name] = self.fragment_properties.pop(old_name)
-
-        # Обновляем порядок в шаблоне
         if old_name in self.template_order:
-            index = self.template_order.index(old_name)
-            self.template_order[index] = new_name
-
+            self.template_order[self.template_order.index(old_name)] = new_name
         return True
 
     def get_fragment_blocks(self, fragment_name: str) -> List[FragmentBlock]:
-        """Возвращает все блоки с указанным названием фрагмента"""
         return [f for f in self.fragments if f.fragment_name == fragment_name]
 
-    def get_all_properties_table(self) -> List[Dict]:
-        """Возвращает таблицу всех свойств фрагментов"""
-        table_data = []
-
-        for fragment_name in sorted(self.fragment_names):
-            blocks = self.get_fragment_blocks(fragment_name)
-
-            for block in blocks:
-                for prop in block.properties:
-                    row = {
-                        'fragment_name': fragment_name,
-                        'characteristic': prop['characteristic'],
-                        'value': prop['value'],
-                        'block_type': block.block_type
-                    }
-                    table_data.append(row)
-
-            # Если у фрагмента нет свойств, добавляем пустую строку
-            if not any(b.properties for b in blocks):
-                table_data.append({
-                    'fragment_name': fragment_name,
-                    'characteristic': None,
-                    'value': None,
-                    'block_type': blocks[0].block_type if blocks else 'unknown'
+    def get_all_properties(self) -> List[Dict]:
+        props = []
+        for frag_name in sorted(self.fragment_names):
+            for prop in self.fragment_properties.get(frag_name, []):
+                props.append({
+                    'fragment_name': frag_name,
+                    'characteristic': prop['characteristic'],
+                    'value': prop['value'],
+                    'is_unique': prop['is_unique']
                 })
+        return props
 
-        return table_data
-
-    def get_fragments_table(self) -> List[Dict]:
-        """Возвращает таблицу фрагментов"""
-        table_data = []
-
-        for fragment_name in sorted(self.fragment_names):
-            blocks = self.get_fragment_blocks(fragment_name)
-            block_types = list(set(b.block_type for b in blocks))
-
-            table_data.append({
-                'fragment_name': fragment_name,
-                'block_count': len(blocks),
-                'block_types': ', '.join(block_types),
-                'has_errors': any(b.errors for b in blocks),
-                'has_warnings': any(b.warnings for b in blocks)
-            })
-
-        return table_data
-
-    def generate_template_strings(self, category_code: str = None) -> Dict:
-        """Генерирует строки шаблонов"""
+    def generate_template(self, category_code: str = None) -> Dict:
         if category_code is None:
             category_code = self.category
-
-        # Формируем переменные фрагментов ТОЛЬКО для существующих фрагментов
-        fragment_vars = {}
-        for fragment_name in self.fragment_names:
-            var_name = f"{{fragment {fragment_name}}}"
-            fragment_vars[fragment_name] = var_name
-
-        # Формируем шаблон по умолчанию из текущего порядка
         if not self.template_order:
             self.template_order = sorted(self.fragment_names)
-
-        default_order = sorted(self.fragment_names)  # ← ДОБАВИТЬ ЭТУ СТРОКУ!
-
-        default_template = " ".join(fragment_vars[name] for name in self.template_order
-                                    if name in fragment_vars)
-
+        fragment_vars = {name: f"{{fragment {name}}}" for name in self.fragment_names}
+        template_parts = [fragment_vars[name] for name in self.template_order if name in fragment_vars]
         return {
             'category_code': category_code,
+            'template': " ".join(template_parts),
             'fragment_variables': fragment_vars,
-            'default_order': default_order,  # ← ДОБАВИТЬ ЭТОТ КЛЮЧ!
-            'current_order': self.template_order,
-            'default_template': default_template
+            'order': self.template_order
         }
 
-
-class Phase6EnhancedProcessor:
-    """Улучшенный процессор фазы 6 с подготовкой данных для сайта"""
-
-    def __init__(self, app_state, input_data=None):
-        self.app_state = app_state
-        self.input_data = input_data or {}
-        self.vm = VariableManager()
-        self.text_processor = EnhancedTextProcessor(self.vm)
-
-        # Получаем категорию
-        self.category = self.input_data.get('category', '')
-        if not self.category:
-            # Пытаемся извлечь из phase1_data
-            phase1_data = self.input_data.get('phase1_data', {})
-            self.category = phase1_data.get('category', 'Без_категории')
-
-        # Инициализируем менеджер фрагментов
-        self.fragment_manager = FragmentManager(self.category)
-
-        # Инициализация session_state
-        if 'phase6_enhanced_data' not in st.session_state:
-            st.session_state.phase6_enhanced_data = {
-                'fragments_processed': False,
-                'fragment_blocks': [],
-                'template_order': [],
-                'category_code': self.category,
-                'merges': {},  # Информация о склеенных фрагментах
-                'manual_corrections': {}  # Ручные исправления
-            }
-
-    def debug_fragment_manager(self):
-        """Метод для отладки fragment_manager"""
-        if not hasattr(self, 'fragment_manager') or not self.fragment_manager:
-            st.error("❌ fragment_manager не инициализирован")
-            return
-
-        st.write("### 🔍 Отладка FragmentManager")
-
-        # 1. Проверяем fragment_names
-        fragment_names = list(self.fragment_manager.fragment_names)
-        st.write(f"**Количество fragment_names:** {len(fragment_names)}")
-
-        if fragment_names:
-            st.write("**Список фрагментов:**")
-            for i, name in enumerate(fragment_names[:10]):  # Показываем первые 10
-                st.write(f"{i + 1}. {name}")
-
-            # 2. Проверяем fragment_blocks для первого фрагмента
-            first_fragment = fragment_names[0]
-            blocks = self.fragment_manager.get_fragment_blocks(first_fragment)
-            st.write(f"**Блоки для фрагмента '{first_fragment}':** {len(blocks)}")
-
-            if blocks:
-                st.write("**Первый блок:**")
-                st.json(blocks[0].to_dict())
-
-        # 3. Проверяем fragments
-        if hasattr(self.fragment_manager, 'fragments'):
-            st.write(f"**Общее количество блоков в fragments:** {len(self.fragment_manager.fragments)}")
-
-            if self.fragment_manager.fragments:
-                st.write("**Структура первого блока:**")
-                st.write(vars(self.fragment_manager.fragments[0]))
-
-        # 4. Проверяем fragment_properties
-        if hasattr(self.fragment_manager, 'fragment_properties'):
-            st.write(f"**Количество свойств:** {len(self.fragment_manager.fragment_properties)}")
-
-            if self.fragment_manager.fragment_properties:
-                st.write("**Пример свойств:**")
-                for frag_name, props in list(self.fragment_manager.fragment_properties.items())[:3]:
-                    st.write(f"• {frag_name}: {len(props)} свойств")
-
-    def display_fragment_naming_interface(self):
-        """Интерфейс для управления названиями фрагментов"""
-        st.header("🏷️ Названия фрагментов")
-
-        # Проверяем наличие менеджера фрагментов
-        if not hasattr(self, 'fragment_manager') or not self.fragment_manager:
-            st.error("❌ Менеджер фрагментов не инициализирован")
-            if st.button("🔄 Восстановить менеджер фрагментов"):
-                if 'fragment_manager' in st.session_state.phase6_enhanced_data:
-                    self.fragment_manager = st.session_state.phase6_enhanced_data['fragment_manager']
-                    st.rerun()
-            return
-
-        # Получаем фрагменты
-        fragment_names = list(self.fragment_manager.fragment_names)
-
-        if not fragment_names:
-            st.info("Нет фрагментов для отображения. Обработайте данные в основном интерфейсе.")
-            return
-
-        # Таблица всех фрагментов
-        fragments_table = self.fragment_manager.get_fragments_table()
-
-        df_fragments = pd.DataFrame(fragments_table)
-
-        # Отображаем таблицу
-        st.write(f"**Всего фрагментов:** {len(fragment_names)}")
-        st.dataframe(df_fragments, use_container_width=True)
-
-        # Редактирование названий
-        st.subheader("✏️ Редактирование названий")
-
-        col1, col2 = st.columns([2, 1])
-
-        with col1:
-            selected_fragment = st.selectbox(
-                "Выберите фрагмент для переименования:",
-                sorted(fragment_names),
-                key="rename_fragment_select"
-            )
-
-        with col2:
-            new_name = st.text_input(
-                "Новое название:",
-                value=selected_fragment,
-                key="rename_fragment_input"
-            )
-
-        if st.button("🔄 Переименовать", key="rename_fragment_btn"):
-            if new_name and new_name != selected_fragment:
-                if self.fragment_manager.rename_fragment(selected_fragment, new_name):
-                    st.success(f"Фрагмент переименован: {selected_fragment} → {new_name}")
-                    st.rerun()
-                else:
-                    st.error("Ошибка при переименовании")
-
-        # Склеивание фрагментов
-        st.subheader("🔗 Склеивание фрагментов")
-
-        # Выбор фрагментов для склеивания
-        selected_to_merge = st.multiselect(
-            "Выберите фрагменты для склеивания (2 и более):",
-            sorted(fragment_names),
-            key="fragments_to_merge"
-        )
-
-        new_merged_name = st.text_input(
-            "Название объединенного фрагмента:",
-            value=f"{self.category}_объединенный",
-            key="merged_fragment_name"
-        )
-
-        if st.button("🔗 Склеить выбранные", key="merge_fragments_btn"):
-            if len(selected_to_merge) >= 2 and new_merged_name:
-                if self.fragment_manager.merge_fragments(selected_to_merge, new_merged_name):
-                    # Сохраняем информацию о склейке
-                    merges = st.session_state.phase6_enhanced_data.get('merges', {})
-                    merges[new_merged_name] = selected_to_merge
-                    st.session_state.phase6_enhanced_data['merges'] = merges
-
-                    # Обновляем менеджер в session_state
-                    st.session_state.phase6_enhanced_data['fragment_manager'] = self.fragment_manager
-
-                    st.success(f"Склеено {len(selected_to_merge)} фрагментов в '{new_merged_name}'")
-                    st.rerun()
-                else:
-                    st.error("Ошибка при склеивании фрагментов")
-            else:
-                st.warning("Выберите минимум 2 фрагмента и укажите название")
-
-    def display_fragment_properties_interface(self):
-        """Интерфейс для просмотра свойств фрагментов"""
-        st.header("📊 Свойства фрагментов")
-
-        # Получаем таблицу свойств
-        properties_table = self.fragment_manager.get_all_properties_table()
-
-        if not properties_table:
-            st.info("Нет данных о свойствах")
-            return
-
-        df_properties = pd.DataFrame(properties_table)
-
-        # Фильтрация
-        col1, col2 = st.columns(2)
-
-        with col1:
-            filter_type = st.selectbox(
-                "Фильтр по типу:",
-                ["Все", "regular", "unique", "other"],
-                key="properties_filter_type"
-            )
-
-        with col2:
-            filter_empty = st.checkbox(
-                "Показать только фрагменты со свойствами",
-                value=True,
-                key="filter_with_properties"
-            )
-
-        # Применяем фильтры
-        filtered_df = df_properties.copy()
-
-        if filter_type != "Все":
-            filtered_df = filtered_df[filtered_df['block_type'] == filter_type]
-
-        if filter_empty:
-            filtered_df = filtered_df[filtered_df['characteristic'].notna()]
-
-        # Отображаем таблицу
-        st.dataframe(filtered_df, use_container_width=True)
-
-        # Экспорт свойств
-        st.download_button(
-            label="📥 Скачать свойства в CSV",
-            data=filtered_df.to_csv(index=False, encoding='utf-8-sig'),
-            file_name=f"fragment_properties_{self.category}.csv",
-            mime="text/csv"
-        )
-
-    def display_fragments_list_interface(self):
-        """Интерфейс списка фрагментов"""
-        st.header("📋 Фрагменты")
-
-        fragments_list = sorted(self.fragment_manager.fragment_names)
-
-        if not fragments_list:
-            st.info("Нет фрагментов")
-            return
-
-        # Отображаем список
-        st.write(f"Всего фрагментов: **{len(fragments_list)}**")
-
-        # Таблица с деталями
-        table_data = []
-        for frag_name in fragments_list:
-            blocks = self.fragment_manager.get_fragment_blocks(frag_name)
-            block_types = list(set(b.block_type for b in blocks))
-
-            # Собираем тексты фрагментов
-            sample_texts = []
-            for block in blocks[:2]:  # Первые 2 блока
-                text_preview = block.processed_text[:100] + "..." if len(
-                    block.processed_text) > 100 else block.processed_text
-                sample_texts.append(text_preview)
-
-            table_data.append({
-                'Фрагмент': frag_name,
-                'Кол-во блоков': len(blocks),
-                'Типы блоков': ', '.join(block_types),
-                'Примеры текстов': ' | '.join(sample_texts),
-                'Есть ошибки': '⚠️' if any(b.errors for b in blocks) else '✅',
-                'Есть предупреждения': '⚠️' if any(b.warnings for b in blocks) else '✅'
-            })
-
-        df_fragments = pd.DataFrame(table_data)
-        st.dataframe(df_fragments, use_container_width=True, height=400)
-
-    def display_templates_interface(self):
-        """Интерфейс для работы с шаблонами"""
-        st.header("🧩 Шаблоны")
-
-        # Ввод кода категории
-        category_code = st.text_input(
-            "Код категории для шаблонов:",
-            value=st.session_state.phase6_enhanced_data.get('category_code', self.category),
-            key="category_code_input"
-        )
-
-        # Сохраняем код категории
-        if category_code:
-            st.session_state.phase6_enhanced_data['category_code'] = category_code
-
-        # Генерируем шаблон
-        template_data = self.fragment_manager.generate_template_strings(category_code)
-
-        # Отображаем переменные фрагментов
-        st.subheader("Переменные фрагментов")
-
-        for frag_name, var in template_data['fragment_variables'].items():
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                st.code(var, language=None)
-            with col2:
-                blocks = self.fragment_manager.get_fragment_blocks(frag_name)
-                st.caption(f"({len(blocks)} блоков)")
-
-        # Редактирование порядка
-        st.subheader("🔀 Порядок фрагментов в шаблоне")
-
-        # Используем текущий порядок из фрагмент-менеджера
-        current_order = self.fragment_manager.template_order.copy()
-
-        # Если order пустой, используем отсортированный список фрагментов
-        if not current_order:
-            current_order = sorted(self.fragment_manager.fragment_names)  # ← ИСПРАВЛЕНО!
-            self.fragment_manager.template_order = current_order.copy()
-
-        # Фильтруем порядок, оставляя только существующие фрагменты
-        existing_fragments = set(self.fragment_manager.fragment_names)
-        current_order = [name for name in current_order if name in existing_fragments]
-
-        # Добавляем отсутствующие фрагменты в конец
-        missing_fragments = existing_fragments - set(current_order)
-        if missing_fragments:
-            current_order.extend(sorted(missing_fragments))
-
-        # Сохраняем обновленный порядок
-        self.fragment_manager.template_order = current_order.copy()
-
-        # Интерфейс для изменения порядка
-        st.write("Перетащите элементы для изменения порядка:")
-
-        for i, frag_name in enumerate(current_order):
-            col1, col2, col3 = st.columns([1, 4, 1])
-
-            with col1:
-                st.write(f"**{i + 1}.**")
-
-            with col2:
-                st.text(frag_name)
-
-            with col3:
-                move_up = st.button("↑", key=f"move_up_{i}_{frag_name}", disabled=(i == 0))
-                move_down = st.button("↓", key=f"move_down_{i}_{frag_name}",
-                                      disabled=(i == len(current_order) - 1))
-
-                if move_up:
-                    current_order[i], current_order[i - 1] = current_order[i - 1], current_order[i]
-                    self.fragment_manager.template_order = current_order.copy()
-                    st.rerun()
-
-                if move_down:
-                    current_order[i], current_order[i + 1] = current_order[i + 1], current_order[i]
-                    self.fragment_manager.template_order = current_order.copy()
-                    st.rerun()
-
-        # Кнопки управления
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            if st.button("💾 Сохранить порядок", key="save_template_order"):
-                self.fragment_manager.template_order = current_order.copy()
-                st.session_state.phase6_enhanced_data['template_order'] = current_order.copy()
-                st.success("Порядок сохранен!")
-
-        with col2:
-            if st.button("🔄 Сбросить к алфавитному", key="reset_to_alphabetical"):
-                alphabetical_order = sorted(self.fragment_manager.fragment_names)
-                current_order = alphabetical_order.copy()
-                self.fragment_manager.template_order = current_order.copy()
-                st.session_state.phase6_enhanced_data['template_order'] = current_order.copy()
-                st.success("Порядок сброшен!")
-                st.rerun()
-
-        with col3:
-            if st.button("🗑️ Очистить порядок", key="clear_template_order"):
-                current_order = []
-                self.fragment_manager.template_order = []
-                st.session_state.phase6_enhanced_data['template_order'] = []
-                st.success("Порядок очищен!")
-                st.rerun()
-
-        # Отображение итогового шаблона
-        st.subheader("📋 Итоговый шаблон")
-
-        # Формируем строку шаблона с проверкой существования фрагментов
-        template_parts = []
-        for frag_name in current_order:
-            if frag_name in template_data['fragment_variables']:
-                template_parts.append(template_data['fragment_variables'][frag_name])
-            else:
-                st.warning(f"Фрагмент '{frag_name}' не найден в списке фрагментов")
-
-        template_string = " ".join(template_parts)
-
-        st.code(template_string, language=None)
-
-        # Копирование шаблона
-        if template_string:
-            st.download_button(
-                label="📋 Скопировать шаблон",
-                data=template_string,
-                file_name=f"template_{category_code}.txt",
-                mime="text/plain",
-                key="download_template"
-            )
-
-        # Предпросмотр
-        with st.expander("👁️ Предпросмотр шаблона"):
-            preview_text = ""
-            for frag_name in current_order:
-                blocks = self.fragment_manager.get_fragment_blocks(frag_name)
-                if blocks:
-                    # Берем первый блок для предпросмотра
-                    preview_text += blocks[0].processed_text + "\n\n"
-
-            st.text_area("Предпросмотр:", preview_text, height=300, key="template_preview")
-
-    def export_to_excel(self) -> Path:
-        """Экспорт всех данных в Excel файл"""
-        export_dir = Path("exports/phase6")
-        export_dir.mkdir(parents=True, exist_ok=True)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.category}_fragments_{timestamp}.xlsx"
-        export_path = export_dir / filename
-
-        # Создаем Excel writer
-        with pd.ExcelWriter(export_path, engine='openpyxl') as writer:
-            # 1. Лист "Шаблоны"
-            template_data = self.fragment_manager.generate_template_strings(
-                st.session_state.phase6_enhanced_data.get('category_code', self.category)
-            )
-
-            templates_df = pd.DataFrame({
-                'Код категории': [template_data['category_code']],
-                'Шаблон': [template_data['default_template']],
-                'Кол-во фрагментов': [len(template_data['fragment_variables'])]
-            })
-            templates_df.to_excel(writer, sheet_name='Шаблоны', index=False)
-
-            # 2. Лист "Фрагменты"
-            fragments_df = pd.DataFrame({
-                'Название фрагмента': sorted(self.fragment_manager.fragment_names)
-            })
-            fragments_df.to_excel(writer, sheet_name='Фрагменты', index=False)
-
-            # 3. Лист "Свойства фрагментов"
-            properties_table = self.fragment_manager.get_all_properties_table()
-            properties_df = pd.DataFrame(properties_table)
-            if not properties_df.empty:
-                properties_df.columns = ['Название фрагмента', 'Характеристика', 'Значение', 'Тип блока']
-                properties_df.to_excel(writer, sheet_name='Свойства фрагментов', index=False)
-            else:
-                pd.DataFrame({'Сообщение': ['Нет данных о свойствах']}).to_excel(
-                    writer, sheet_name='Свойства фрагментов', index=False
-                )
-
-            # 4. Лист "Элементы фрагментов"
-            fragment_elements = []
-            for fragment in self.fragment_manager.fragments:
-                fragment_elements.append({
-                    'Название блока': fragment.fragment_name,
-                    'Тип блока': fragment.block_type,
-                    'Характеристика': fragment.characteristic_name,
-                    'Значение': fragment.characteristic_value,
-                    'Оригинальный текст': fragment.original_text,
-                    'Обработанный текст': fragment.processed_text,
-                    'Ошибки': '; '.join(fragment.errors) if fragment.errors else '',
-                    'Предупреждения': '; '.join(fragment.warnings) if fragment.warnings else ''
-                })
-
-            elements_df = pd.DataFrame(fragment_elements)
-            elements_df.to_excel(writer, sheet_name='Элементы фрагментов', index=False)
-
-            # 5. Лист "Склейки" (если есть)
-            merges = st.session_state.phase6_enhanced_data.get('merges', {})
-            if merges:
-                merges_data = []
-                for new_name, old_names in merges.items():
-                    merges_data.append({
-                        'Объединенный фрагмент': new_name,
-                        'Исходные фрагменты': ', '.join(old_names)
-                    })
-                merges_df = pd.DataFrame(merges_data)
-                merges_df.to_excel(writer, sheet_name='Склейки', index=False)
-
-        return export_path
-
-    def main_interface(self):
-        """Основной интерфейс улучшенной фазы 6"""
-        st.title("🚀 Фаза 6: Подготовка к загрузке на сайт")
-        st.markdown("---")
-
-        # ВОССТАНАВЛИВАЕМ fragment_manager из session_state ПЕРЕД проверками
-        if (st.session_state.phase6_enhanced_data.get('fragments_processed', False) and
-                'fragment_manager' in st.session_state.phase6_enhanced_data):
-            self.fragment_manager = st.session_state.phase6_enhanced_data['fragment_manager']
-
-        # БОКОВАЯ ПАНЕЛЬ
-        with st.sidebar:
-            st.header("🔄 Управление данными")
-
-            # Кнопка обновления из фазы 5
-            if st.button("🔄 Обновить из фазы 5", use_container_width=True,
-                         help="Загрузить последние данные из фазы 5"):
-                if self.load_and_process_data(force_reload=True):
-                    st.success("✅ Данные обновлены!")
-                    st.rerun()
-                else:
-                    st.error("❌ Не удалось обновить данные")
-
-            # Кнопка сброса обработки
-            if st.button("🗑️ Сбросить обработку", use_container_width=True,
-                         help="Очистить все обработанные данные фазы 6"):
-                st.session_state.phase6_enhanced_data = {
-                    'fragments_processed': False,
-                    'fragment_blocks': [],
-                    'template_order': [],
-                    'category_code': self.category,
-                    'merges': {},
-                    'manual_corrections': {}
-                }
-                st.success("✅ Данные сброшены!")
-                st.rerun()
-
-            st.divider()
-
-            # Статус данных
-            st.header("📊 Статус")
-
-            if (st.session_state.phase6_enhanced_data.get('fragments_processed', False)):
-                if 'fragment_manager' in st.session_state.phase6_enhanced_data:
-                    self.fragment_manager = st.session_state.phase6_enhanced_data['fragment_manager']
-                else:
-                    # Пробуем восстановить из fragment_blocks
-                    if self.restore_fragments_from_session():
-                        st.success("Фрагменты восстановлены из session_state")
-                        st.rerun()
-
-            # Информация о данных фазы 5
-            if 'app_data' in st.session_state and 'phase5' in st.session_state.app_data:
-                phase5_data = st.session_state.app_data['phase5']
-                if phase5_data and 'statistics' in phase5_data:
-                    stats = phase5_data['statistics']
-                    success_count = stats.get('success', 0)
-                    st.write(f"**Из фазы 5:** {success_count} текстов")
-
-            st.divider()
-
-            # Навигация
-            st.header("🚦 Навигация")
-            if st.button("← Вернуться к фазе 5", use_container_width=True):
-                st.session_state.current_phase = 5
-                st.rerun()
-
-        # Проверяем загрузку данных
-        if not st.session_state.phase6_enhanced_data.get('fragments_processed', False):
-            # Показываем информацию о загруженных данных
-            if 'app_data' in st.session_state and 'phase5' in st.session_state.app_data:
-                phase5_data = st.session_state.app_data['phase5']
-                stats = phase5_data.get('statistics', {})
-                st.info("""
-                ## 📥 Подготовка данных для сайта
-
-                Эта фаза подготавливает сгенерированные тексты к загрузке на сайт.
-
-                **Что будет сделано:**
-                1. Автоматическое присвоение названий фрагментам
-                2. Формирование свойств фрагментов
-                3. Создание списка фрагментов
-                4. Подготовка шаблонов для сайта
-                """)
-
-                # Показываем количество текстов для обработки
-                results = phase5_data.get('results', [])
-                count = len(results) if isinstance(results, (list, dict)) else 0
-                st.write(f"**Найдено {count} текстов для обработки**")
-
-            if st.button("🔄 Начать обработку данных", type="primary",
-                         use_container_width=True, key="start_enhanced_processing"):
-                with st.spinner("Обработка данных..."):
-                    if self.load_and_process_data():
-                        st.success("✅ Данные успешно обработаны!")
-                        st.rerun()
-                    else:
-                        st.error("❌ Не удалось обработать данные")
-
-            return
-
-        # Проверяем наличие фрагментов
-        if not hasattr(self, 'fragment_manager') or not self.fragment_manager:
-            st.error("❌ Менеджер фрагментов не загружен")
-            if st.button("🔄 Восстановить менеджер фрагментов", key="restore_fragment_manager"):
-                # Пытаемся восстановить из session_state
-                if 'fragment_manager' in st.session_state.phase6_enhanced_data:
-                    self.fragment_manager = st.session_state.phase6_enhanced_data['fragment_manager']
-                    st.rerun()
-            return
-
-        fragment_names = list(self.fragment_manager.fragment_names)
-
-        st.write(f"**Обработано фрагментов:** {len(fragment_names)}")
-
-        # Если фрагментов нет, но данные обработаны
-        if not fragment_names:
-            st.warning("⚠️ Фрагменты не найдены, хотя данные помечены как обработанные")
-
-            # Кнопка для отладки
-            if st.button("🔍 Показать отладочную информацию", key="show_debug_info"):
-                self.debug_fragment_manager()
-                st.stop()
-
-            # Показываем debug информацию
-            with st.expander("🔍 Информация для отладки"):
-                st.write("Состояние phase6_enhanced_data:")
-                st.json(st.session_state.phase6_enhanced_data, expanded=False)
-
-                if 'fragment_blocks' in st.session_state.phase6_enhanced_data:
-                    fragment_blocks = st.session_state.phase6_enhanced_data['fragment_blocks']
-                    st.write(f"Количество блоков в fragment_blocks: {len(fragment_blocks)}")
-                    if fragment_blocks:
-                        st.write("Пример первого блока:")
-                        st.write(fragment_blocks[0])
-
-            if st.button("🔄 Перезагрузить фрагменты", key="reload_fragments"):
-                # Пробуем перезагрузить из исходных данных
-                if self.load_and_process_data(force_reload=True):
-                    st.success("Фрагменты перезагружены!")
-                    st.rerun()
-            return
-
-        # Навигация по вкладкам
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "🏷️ Названия",
-            "📊 Свойства",
-            "📋 Фрагменты",
-            "🧩 Шаблоны",
-            "💾 Экспорт"
-        ])
-
-        with tab1:
-            self.display_fragment_naming_interface()
-
-        with tab2:
-            self.display_fragment_properties_interface()
-
-        with tab3:
-            self.display_fragments_list_interface()
-
-        with tab4:
-            self.display_templates_interface()
-
-        with tab5:
-            st.header("📤 Экспорт данных")
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.markdown("""
-                **Подготовленные данные:**
-                - Шаблоны для сайта
-                - Список фрагментов
-                - Свойства фрагментов
-                - Тексты элементов
-                """)
-
-            with col2:
-                if st.button("📊 Экспорт в Excel", type="primary",
-                             use_container_width=True, key="export_excel"):
-                    with st.spinner("Создание Excel файла..."):
-                        try:
-                            export_path = self.export_to_excel()
-
-                            # Читаем файл для скачивания
-                            with open(export_path, 'rb') as f:
-                                excel_data = f.read()
-
-                            st.download_button(
-                                label="📥 Скачать Excel файл",
-                                data=excel_data,
-                                file_name=export_path.name,
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="download_excel"
-                            )
-
-                            st.success(f"✅ Файл создан: {export_path.name}")
-                        except Exception as e:
-                            st.error(f"Ошибка при создании Excel файла: {str(e)}")
-
-    def restore_fragments_from_session(self):
-        """Восстанавливает фрагменты из данных session_state"""
-        try:
-            if 'fragment_blocks' in st.session_state.phase6_enhanced_data:
-                fragment_blocks = st.session_state.phase6_enhanced_data['fragment_blocks']
-
-                # Создаем новый менеджер
-                self.fragment_manager = FragmentManager(self.category)
-
-                # Добавляем все блоки
-                for block_data in fragment_blocks:
-                    try:
-                        self.fragment_manager.add_block(block_data)
-                    except Exception as e:
-                        st.warning(f"Ошибка при восстановлении блока: {str(e)}")
-
-                # Восстанавливаем порядок шаблона
-                if 'template_order' in st.session_state.phase6_enhanced_data:
-                    self.fragment_manager.template_order = st.session_state.phase6_enhanced_data['template_order']
-
-                # Сохраняем обратно в session_state
-                st.session_state.phase6_enhanced_data['fragment_manager'] = self.fragment_manager
-
+    def update_block(self, block_id: str, updates: Dict) -> bool:
+        for fragment in self.fragments:
+            if fragment.id == block_id:
+                for key, value in updates.items():
+                    if hasattr(fragment, key):
+                        setattr(fragment, key, value)
+                fragment.last_modified = datetime.now()
                 return True
-        except Exception as e:
-            st.error(f"Ошибка при восстановлении фрагментов: {str(e)}")
+        return False
 
+    def delete_block(self, block_id: str) -> bool:
+        for i, fragment in enumerate(self.fragments):
+            if fragment.id == block_id:
+                del self.fragments[i]
+                if not any(f.fragment_name == fragment.fragment_name for f in self.fragments):
+                    self.fragment_names.discard(fragment.fragment_name)
+                return True
         return False
 
 
-def main():
-    """Основная функция фазы 6"""
+class EnhancedTextProcessor:
+    def __init__(self, variable_manager: VariableManager):
+        self.vm = variable_manager
+        self.pattern = re.compile(r'\[([^\]]+)\]')
+        self.special_symbols_pattern = re.compile(r'[<>{}|\\^`~!@#$%^&*()_\+=\[\]\'":;?/]')
+        self.units_to_remove = [
+            "мм", "метр", "м", "см", "дм", "км", "миллиметр", "сантиметр", "дециметр", "километр",
+            "кг", "г", "мг", "тонна", "т", "грамм", "миллиграмм", "килограмм",
+            "л", "мл", "литр", "миллилитр", "шт", "штук", "штука", "штуки",
+            "кг/м", "г/см³", "г/см3", "кг/м³", "кг/м3", "°C", "°F", "град", "градус", "градусов"
+        ]
+        self.instruction_keywords = [
+            "инструкция:", "промпт:", "введите:", "создайте:", "напишите:",
+            "instruction:", "prompt:", "write:", "create:", "generate:",
+            "опишите:", "сформулируйте:", "составьте:", "подготовьте:"
+        ]
 
-    # Получаем данные напрямую из session_state
+    # --------------------------------------------------------------
+    #  ЗАМЕНА ПЕРЕМЕННЫХ (ТОЛЬКО ЗАМЕНА, БЕЗ АВТОДОБАВЛЕНИЯ)
+    # --------------------------------------------------------------
+    def replace_variables(self, text: str, block_type: str,
+                         char_name: Optional[str] = None,
+                         char_value: Optional[str] = None) -> Dict:
+        """
+        Заменяет выражения [variable] на соответствующие переменные.
+        НЕ добавляет автоматически новые скобки.
+        Для non-regular блоков, если переменная не найдена, заменяет на {system var_name} и добавляет ошибку.
+        """
+        errors = []
+        warnings = []
+        special_symbols = self._find_special_symbols(text)
+
+        matches = list(self.pattern.finditer(text))
+        processed_text = text
+        offset = 0
+        replacements = []
+
+        for match in matches:
+            var_name = match.group(1).strip()
+            start, end = match.span()
+
+            if block_type == 'regular':
+                # Для regular блока заменяем на {prop ...}
+                replacement = f"{{prop {char_name if char_name else var_name}}}"
+            else:
+                # Для non-regular пытаемся найти системную переменную
+                var_lower = var_name.lower()
+                found = False
+                replacement = None
+                for sys_var, data in self.vm.system_vars.items():
+                    if sys_var.lower() == var_lower:
+                        replacement = data['variants'][0]
+                        found = True
+                        break
+                if not found:
+                    # Если не нашли, всё равно заменяем на {system ...}, но добавляем ошибку
+                    replacement = f"{{system {var_name}}}"
+                    errors.append(f"Неизвестная переменная '{var_name}' в non-regular блоке")
+
+            new_start = start + offset
+            new_end = end + offset
+            processed_text = processed_text[:new_start] + replacement + processed_text[new_end:]
+            offset += len(replacement) - (end - start)
+
+            replacements.append({
+                'original': match.group(),
+                'replacement': replacement,
+                'position': (start, end)
+            })
+
+        return {
+            'processed_text': processed_text,
+            'replacements': replacements,
+            'errors': errors,
+            'warnings': warnings,
+            'special_symbols': special_symbols
+        }
+
+    # --------------------------------------------------------------
+    #  АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ СКОБОК (ТОЛЬКО ДЛЯ REGULAR)
+    # --------------------------------------------------------------
+    # --------------------------------------------------------------
+    #  АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ СКОБОК (ТОЛЬКО ДЛЯ REGULAR)
+    # --------------------------------------------------------------
+    def auto_insert_bracket(self, text: str, char_value: str) -> Tuple[str, bool, Optional[str]]:
+        """
+        Умное добавление скобок для regular-блоков:
+        1. Ищет в тексте вхождение characteristic_value (без учёта регистра) и оборачивает первое найденное в квадратные скобки.
+        2. Если значение не найдено, добавляет [char_value] в конец текста.
+        Возвращает (новый_текст, был_ли_добавлен/изменён, найденное_значение_или_None).
+        """
+        if not char_value:
+            return text, False, None
+
+        # Если уже есть скобки — ничего не делаем
+        if self.pattern.search(text):
+            return text, False, None
+
+        # Экранируем спецсимволы в значении для регулярного выражения
+        escaped_value = re.escape(char_value)
+        # Ищем полное совпадение слова/фразы (границы слов)
+        pattern = r'\b' + escaped_value + r'\b'
+        match = re.search(pattern, text, re.IGNORECASE)
+
+        if match:
+            # Нашли значение, оборачиваем его в скобки
+            start, end = match.span()
+            # Важно: не заменять, если уже внутри скобок? Но мы уже проверили, что скобок нет.
+            new_text = text[:start] + '[' + text[start:end] + ']' + text[end:]
+            return new_text, True, text[start:end]
+        else:
+            # Не нашли — добавляем в конец
+            if text and not text.endswith(' '):
+                text += ' '
+            added_text = f"[{char_value}]"
+            new_text = text + added_text
+            return new_text, True, char_value
+
+    # --------------------------------------------------------------
+    #  ПРОВЕРКА ОТСУТСТВИЯ СКОБОК (ДЛЯ REGULAR)
+    # --------------------------------------------------------------
+    def check_missing_brackets(self, text: str, block_type: str) -> List[str]:
+        if block_type == 'regular' and not self.pattern.search(text):
+            return ["В regular-блоке отсутствует значение в квадратных скобках [...]"]
+        return []
+
+    # --------------------------------------------------------------
+    #  УДАЛЕНИЕ ЕДИНИЦ
+    # --------------------------------------------------------------
+    def remove_units(self, text: str, units_list: List[str]) -> Tuple[str, List[str]]:
+        removed = []
+        cleaned = text
+        for unit in units_list:
+            pattern = r'\b' + re.escape(unit) + r'\b'
+            for m in reversed(list(re.finditer(pattern, cleaned, re.IGNORECASE))):
+                cleaned = cleaned[:m.start()] + cleaned[m.end():]
+                removed.append(unit)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned, removed
+
+    # --------------------------------------------------------------
+    #  УДАЛЕНИЕ СПЕЦСИМВОЛОВ
+    # --------------------------------------------------------------
+    def remove_special_symbols(self, text: str, symbols_to_remove: List[str]) -> Tuple[str, List[str], List[Tuple[str, int, int]]]:
+        removed = []
+        cleaned = text
+        for symbol in symbols_to_remove:
+            escaped = re.escape(symbol)
+            pattern = escaped
+            for m in reversed(list(re.finditer(pattern, cleaned))):
+                cleaned = cleaned[:m.start()] + cleaned[m.end():]
+                removed.append(symbol)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        new_special_symbols = self._find_special_symbols(cleaned)
+        return cleaned, removed, new_special_symbols
+
+    # --------------------------------------------------------------
+    #  ПОИСК СПЕЦСИМВОЛОВ
+    # --------------------------------------------------------------
+    def _find_special_symbols(self, text: str) -> List[Tuple[str, int, int]]:
+        specials = []
+        for match in self.special_symbols_pattern.finditer(text):
+            symbol = match.group()
+            if symbol not in ['[', ']', ',', '.', '-', '_', ' ', '\t', '\n']:
+                specials.append((symbol, match.start(), match.end()))
+        return specials
+
+    # --------------------------------------------------------------
+    #  ГЕНЕРАЦИЯ HTML
+    # --------------------------------------------------------------
+    def convert_to_html(self, text: str) -> str:
+        if not text:
+            return ""
+        lines = text.split('\n')
+        html_lines = []
+        in_list = False
+        for line in lines:
+            line = line.rstrip()
+            if not line:
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                continue
+            if line.startswith('### '):
+                html_lines.append(f'<h3>{line[4:]}</h3>')
+            elif line.startswith('## '):
+                html_lines.append(f'<h2>{line[3:]}</h2>')
+            elif line.startswith('# '):
+                html_lines.append(f'<h1>{line[2:]}</h1>')
+            elif line.startswith('- ') or line.startswith('* ') or re.match(r'^\d+\.', line):
+                if not in_list:
+                    html_lines.append('<ul>')
+                    in_list = True
+                content = re.sub(r'^[-*\d.]+\s*', '', line)
+                html_lines.append(f'<li>{content}</li>')
+            else:
+                if in_list:
+                    html_lines.append('</ul>')
+                    in_list = False
+                line = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', line)
+                line = re.sub(r'\*(.+?)\*', r'<em>\1</em>', line)
+                html_lines.append(f'<p>{line}</p>')
+        if in_list:
+            html_lines.append('</ul>')
+        return '\n'.join(html_lines)
+
+    # --------------------------------------------------------------
+    #  УПРАВЛЕНИЕ СПИСКОМ ЕДИНИЦ
+    # --------------------------------------------------------------
+    def add_unit_to_remove(self, unit: str):
+        if unit and unit not in self.units_to_remove:
+            self.units_to_remove.append(unit)
+
+    def remove_unit_from_list(self, unit: str):
+        if unit in self.units_to_remove:
+            self.units_to_remove.remove(unit)
+
+    def find_units_in_text(self, text: str) -> List[str]:
+        found = set()
+        text_lower = text.lower()
+        for unit in self.units_to_remove:
+            pattern = r'\b' + re.escape(unit.lower()) + r'\b'
+            if re.search(pattern, text_lower):
+                found.add(unit)
+        return sorted(found)
+
+
+class ExportManager:
+    @staticmethod
+    def export_to_excel(fragment_manager: FragmentManager, template_data: Dict = None,
+                        use_html: bool = False) -> BytesIO:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            if template_data:
+                pd.DataFrame({
+                    'Код категории': [template_data['category_code']],
+                    'Шаблон': [template_data['template']]
+                }).to_excel(writer, sheet_name='Шаблоны', index=False)
+
+            pd.DataFrame({
+                'Название фрагмента': sorted(fragment_manager.fragment_names)
+            }).to_excel(writer, sheet_name='Фрагменты', index=False)
+
+            props = fragment_manager.get_all_properties()
+            if props:
+                pd.DataFrame(props).to_excel(writer, sheet_name='Свойства фрагментов', index=False)
+            else:
+                pd.DataFrame({'Сообщение': ['Нет данных']}).to_excel(writer, sheet_name='Свойства фрагментов',
+                                                                     index=False)
+
+            elements = []
+            for f in fragment_manager.fragments:
+                elements.append({
+                    'Название блока': f.fragment_name,
+                    'Текстовый фрагмент': f.html_text if use_html else f.processed_text,
+                    'HTML версия': f.html_text,
+                    'Обычный текст': f.processed_text,
+                    'Тип': f.block_type,
+                    'Характеристика': f.characteristic_name or '',
+                    'Значение': f.characteristic_value or '',
+                    'Статус': f.status,
+                    'Ошибки': '; '.join(f.errors),
+                    'Предупреждения': '; '.join(f.warnings)
+                })
+            pd.DataFrame(elements).to_excel(writer, sheet_name='Элементы фрагментов', index=False)
+        output.seek(0)
+        return output
+
+
+class Phase6Interface:
+    def __init__(self):
+        self.vm = VariableManager()
+        self.text_processor = EnhancedTextProcessor(self.vm)
+        self._init_session_state()
+        self._init_ui_state()
+
+    def _init_session_state(self):
+        if 'fragment_manager' not in st.session_state:
+            st.session_state.fragment_manager = FragmentManager("Без_категории")
+        if 'transformation_registry' not in st.session_state:
+            st.session_state.transformation_registry = TransformationRegistry()
+        if 'units_manager' not in st.session_state:
+            st.session_state.units_manager = {
+                'units': self.text_processor.units_to_remove.copy(),
+                'custom_units': []
+            }
+        if 'found_units' not in st.session_state:
+            st.session_state.found_units = []
+        if 'found_special_symbols' not in st.session_state:
+            st.session_state.found_special_symbols = []
+
+    def _init_ui_state(self):
+        default_ui_state = {
+            'selected_block_id': None,
+            'editing_mode': False,
+            'active_tab': 'fragments',
+            'show_html': False,
+            'selected_issues': set(),
+            'fragments_page': 1,
+            'fragments_per_page': 20,
+            'fragment_search': '',
+            'fragment_group_by': 'none',
+            'insert_position_mode': 'end',
+            'insert_position_word_index': 0,
+            'selected_units_global': [],
+            'selected_symbols_global': [],
+            'compact_view': True
+        }
+        if 'ui_state' not in st.session_state:
+            st.session_state.ui_state = default_ui_state.copy()
+        else:
+            for key, value in default_ui_state.items():
+                if key not in st.session_state.ui_state:
+                    st.session_state.ui_state[key] = value
+
+    def _migrate_fragments(self):
+        fm = st.session_state.fragment_manager
+        for frag in fm.fragments:
+            if not hasattr(frag, 'special_symbols'):
+                frag.special_symbols = []
+            if not hasattr(frag, 'html_text'):
+                frag.html_text = ""
+            if not hasattr(frag, 'auto_corrected'):
+                frag.auto_corrected = False
+            if not hasattr(frag, 'added_value'):
+                frag.added_value = None
+            if not hasattr(frag, 'last_modified'):
+                frag.last_modified = datetime.now()
+            if isinstance(frag.last_modified, str):
+                try:
+                    frag.last_modified = datetime.fromisoformat(frag.last_modified)
+                except:
+                    frag.last_modified = datetime.now()
+
+    # ------------------------------------------------------------------
+    #                     ЗАГРУЗКА ДАННЫХ (БЕЗ ОБРАБОТКИ)
+    # ------------------------------------------------------------------
+    def _load_data(self) -> bool:
+        try:
+            app_data = st.session_state.app_data
+            if 'phase5' not in app_data:
+                st.error("❌ Нет данных из фазы 5")
+                return False
+
+            phase5_data = app_data['phase5']
+            results = phase5_data.get('results', [])
+            if not results:
+                st.warning("⚠️ Нет результатов для обработки")
+                return False
+
+            if st.session_state.fragment_manager.fragments:
+                return True
+
+            fm = st.session_state.fragment_manager
+
+            for result in results:
+                if result.get('status') != 'success':
+                    continue
+
+                frag_name = self._generate_fragment_name(result)
+                original = result.get('edited_text', '')
+
+                block_data = {
+                    'id': result.get('prompt_id', str(uuid.uuid4())),
+                    'fragment_name': frag_name,
+                    'original_text': original,
+                    'processed_text': original,
+                    'html_text': '',
+                    'block_type': result.get('type', 'unknown'),
+                    'characteristic_name': result.get('characteristic_name'),
+                    'characteristic_value': result.get('characteristic_value'),
+                    'errors': [],
+                    'warnings': [],
+                    'special_symbols': [],
+                    'status': 'pending',
+                    'auto_corrected': False,
+                    'added_value': None
+                }
+                fm.add_block(block_data)
+
+            return True
+        except Exception as e:
+            st.error(f"Ошибка загрузки: {str(e)}")
+            return False
+
+    def _generate_fragment_name(self, result: Dict) -> str:
+        bt = result.get('type', '')
+        cn = result.get('characteristic_name', '')
+        cv = result.get('characteristic_value', '')
+        cat = st.session_state.app_data.get('category', 'Без_категории')
+
+        if bt == 'regular' and cn:
+            return f"{cat}_{cn}"
+        elif bt == 'unique' and cn and cv:
+            clean = re.sub(r'[^\w\s-]', '', cv.lower())
+            clean = re.sub(r'[\s-]+', '_', clean)[:30].strip('_')
+            return f"{cat}_{cn}_{clean}"
+        else:
+            bn = result.get('block_name', '')
+            if bn:
+                clean = re.sub(r'[^\w\s-]', '', bn.lower())
+                clean = re.sub(r'[\s-]+', '_', clean)[:30].strip('_')
+                return f"{cat}_{clean}"
+            return f"{cat}_блок_{uuid.uuid4().hex[:8]}"
+
+    # ------------------------------------------------------------------
+    #                     УПРАВЛЕНИЕ ЕДИНИЦАМИ
+    # ------------------------------------------------------------------
+    def _scan_units_in_texts(self) -> List[str]:
+        fm = st.session_state.fragment_manager
+        all_units = set()
+        for frag in fm.fragments:
+            units_in_text = self.text_processor.find_units_in_text(frag.original_text)
+            all_units.update(units_in_text)
+        return sorted(all_units)
+
+    def _manage_units(self):
+        with st.sidebar.expander("⚖️ Единицы измерения", expanded=False):
+            st.write("### Все доступные единицы")
+            st.write("Список по умолчанию + пользовательские:")
+            for unit in st.session_state.units_manager['units']:
+                st.write(f"- {unit}")
+
+            st.divider()
+            st.write("### Найденные в текстах единицы")
+            found = st.session_state.get('found_units', [])
+            if found:
+                selected = st.multiselect(
+                    "Выберите единицы для удаления:",
+                    found,
+                    default=st.session_state.ui_state.get('selected_units_global', []),
+                    key="selected_units_global_widget"
+                )
+                st.session_state.ui_state['selected_units_global'] = selected
+            else:
+                st.info("В текстах не найдено стандартных единиц измерения.")
+                st.session_state.ui_state['selected_units_global'] = []
+
+            st.divider()
+            new_unit = st.text_input("Добавить свою единицу:")
+            if st.button("➕ Добавить", use_container_width=True):
+                if new_unit and new_unit not in st.session_state.units_manager['units']:
+                    st.session_state.units_manager['units'].append(new_unit)
+                    self.text_processor.add_unit_to_remove(new_unit)
+                    st.session_state.found_units = self._scan_units_in_texts()
+                    st.rerun()
+
+            if st.button("🔄 Сбросить к настройкам по умолчанию", use_container_width=True):
+                default_units = [
+                    "мм", "метр", "м", "см", "дм", "км", "миллиметр", "сантиметр", "дециметр", "километр",
+                    "кг", "г", "мг", "тонна", "т", "грамм", "миллиграмм", "килограмм",
+                    "л", "мл", "литр", "миллилитр", "шт", "штук", "штука", "штуки",
+                    "кг/м", "г/см³", "г/см3", "кг/м³", "кг/м3", "°C", "°F", "град", "градус", "градусов"
+                ]
+                st.session_state.units_manager['units'] = default_units
+                self.text_processor.units_to_remove = default_units.copy()
+                st.session_state.found_units = self._scan_units_in_texts()
+                st.rerun()
+
+    # ------------------------------------------------------------------
+    #                     УПРАВЛЕНИЕ СПЕЦСИМВОЛАМИ
+    # ------------------------------------------------------------------
+    def _scan_special_symbols_in_texts(self) -> List[str]:
+        fm = st.session_state.fragment_manager
+        all_symbols = set()
+        for frag in fm.fragments:
+            sym_list = self.text_processor._find_special_symbols(frag.original_text)
+            for sym, _, _ in sym_list:
+                all_symbols.add(sym)
+        return sorted(all_symbols)
+
+    def _manage_special_symbols(self):
+        with st.sidebar.expander("⚡ Специальные символы", expanded=False):
+            st.write("### Найденные в текстах спецсимволы")
+            found = st.session_state.get('found_special_symbols', [])
+            if found:
+                selected = st.multiselect(
+                    "Выберите символы для удаления:",
+                    found,
+                    default=st.session_state.ui_state.get('selected_symbols_global', []),
+                    key="selected_symbols_global_widget"
+                )
+                st.session_state.ui_state['selected_symbols_global'] = selected
+                if st.button("🗑️ Удалить выбранные символы из ВСЕХ блоков", use_container_width=True):
+                    self._apply_special_symbol_removal(symbols_to_remove=selected)
+                    st.rerun()
+            else:
+                st.info("Специальные символы не найдены.")
+
+    # ------------------------------------------------------------------
+    #                     ОПЕРАЦИИ НАД БЛОКАМИ (ИНДИВИДУАЛЬНЫЕ И ОБЩИЕ)
+    # ------------------------------------------------------------------
+    def _apply_variable_replacement(self, block_id: str = None):
+        """Замена переменных (только замена существующих скобок)."""
+        fm = st.session_state.fragment_manager
+        registry = st.session_state.transformation_registry
+        blocks = [next((b for b in fm.fragments if b.id == block_id), None)] if block_id else fm.fragments
+        blocks = [b for b in blocks if b is not None]
+
+        all_replacements = []
+        errors_occurred = False
+
+        for block in blocks:
+            result = self.text_processor.replace_variables(
+                text=block.processed_text,
+                block_type=block.block_type,
+                char_name=block.characteristic_name,
+                char_value=block.characteristic_value
+            )
+
+            old_text = block.processed_text
+            block.processed_text = result['processed_text']
+            block.special_symbols = result['special_symbols']
+            # Добавляем новые ошибки
+            for err in result['errors']:
+                if err not in block.errors:
+                    block.errors.append(err)
+                    block.status = 'error'
+                    trans = TextTransformation(
+                        block_id=block.id,
+                        fragment_name=block.fragment_name,
+                        transformation_type=TransformationType.ERROR,
+                        original="",
+                        result="",
+                        meta={'message': err},
+                        severity=SeverityLevel.ERROR,
+                        user="system"
+                    )
+                    registry.add(trans)
+                    errors_occurred = True
+
+            block.last_modified = datetime.now()
+
+            for repl in result['replacements']:
+                trans = TextTransformation(
+                    block_id=block.id,
+                    fragment_name=block.fragment_name,
+                    transformation_type=TransformationType.VARIABLE_REPLACE,
+                    original=repl['original'],
+                    result=repl['replacement'],
+                    start=repl['position'][0],
+                    end=repl['position'][1],
+                    severity=SeverityLevel.INFO,
+                    user="user"
+                )
+                registry.add(trans)
+                all_replacements.append({
+                    'block': block.fragment_name,
+                    'original': repl['original'],
+                    'replacement': repl['replacement']
+                })
+
+        if all_replacements:
+            st.success("✅ Переменные заменены")
+            df = pd.DataFrame(all_replacements)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("Нет замен для выполнения")
+
+        if errors_occurred:
+            st.error("❌ При замене возникли ошибки. Проверьте вкладку 'Проблемы'.")
+
+    def _auto_insert_regular_blocks(self, block_id: str = None):
+        """Автоматически оборачивает найденное значение в [] в regular-блоках без скобок."""
+        fm = st.session_state.fragment_manager
+        registry = st.session_state.transformation_registry
+        blocks = [next((b for b in fm.fragments if b.id == block_id), None)] if block_id else fm.fragments
+        blocks = [b for b in blocks if b is not None and b.block_type == 'regular']
+
+        inserted = 0
+        for block in blocks:
+            if not block.characteristic_value:
+                continue
+            new_text, added, found_value = self.text_processor.auto_insert_bracket(
+                block.processed_text, block.characteristic_value
+            )
+            if added:
+                block.processed_text = new_text
+                block.last_modified = datetime.now()
+                block.auto_corrected = True
+                block.added_value = found_value
+                trans = TextTransformation(
+                    block_id=block.id,
+                    fragment_name=block.fragment_name,
+                    transformation_type=TransformationType.AUTO_INSERT,
+                    original="",
+                    result=f"[{found_value}]",
+                    meta={'value': found_value, 'method': 'wrap' if found_value != block.characteristic_value else 'append'},
+                    severity=SeverityLevel.WARNING,
+                    user="system"
+                )
+                registry.add(trans)
+                inserted += 1
+
+        if inserted:
+            st.success(f"✅ Добавлены/обёрнуты значения в {inserted} regular-блоков")
+        else:
+            st.info("Нет regular-блоков, требующих добавления значения")
+
+    def _apply_unit_removal(self, block_id: str = None, units_to_remove: List[str] = None):
+        if not units_to_remove:
+            st.warning("Не выбрано ни одной единицы для удаления.")
+            return
+
+        fm = st.session_state.fragment_manager
+        registry = st.session_state.transformation_registry
+        blocks = [next((b for b in fm.fragments if b.id == block_id), None)] if block_id else fm.fragments
+        blocks = [b for b in blocks if b is not None]
+
+        all_removed = []
+
+        for block in blocks:
+            cleaned, removed = self.text_processor.remove_units(block.processed_text, units_to_remove)
+            if removed:
+                block.processed_text = cleaned
+                block.last_modified = datetime.now()
+                trans = TextTransformation(
+                    block_id=block.id,
+                    fragment_name=block.fragment_name,
+                    transformation_type=TransformationType.UNIT_REMOVED,
+                    original="",
+                    result="",
+                    meta={'removed_units': list(set(removed))},
+                    severity=SeverityLevel.INFO,
+                    user="user"
+                )
+                registry.add(trans)
+                all_removed.extend([(block.fragment_name, unit) for unit in set(removed)])
+
+        if all_removed:
+            st.success(f"✅ Удалены единицы из {len(set(b for b,_ in all_removed))} блоков")
+            df = pd.DataFrame(all_removed, columns=["Фрагмент", "Единица"]).drop_duplicates()
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("Единицы для удаления не найдены в текстах.")
+
+    def _apply_special_symbol_removal(self, block_id: str = None, symbols_to_remove: List[str] = None):
+        if not symbols_to_remove:
+            st.warning("Не выбрано ни одного символа для удаления.")
+            return
+
+        fm = st.session_state.fragment_manager
+        registry = st.session_state.transformation_registry
+        blocks = [next((b for b in fm.fragments if b.id == block_id), None)] if block_id else fm.fragments
+        blocks = [b for b in blocks if b is not None]
+
+        all_removed = []
+
+        for block in blocks:
+            cleaned, removed, new_specials = self.text_processor.remove_special_symbols(
+                block.processed_text, symbols_to_remove
+            )
+            if removed:
+                block.processed_text = cleaned
+                block.special_symbols = new_specials
+                block.last_modified = datetime.now()
+                trans = TextTransformation(
+                    block_id=block.id,
+                    fragment_name=block.fragment_name,
+                    transformation_type=TransformationType.SPECIAL_SYMBOL_REMOVED,
+                    original="",
+                    result="",
+                    meta={'removed_symbols': list(set(removed))},
+                    severity=SeverityLevel.INFO,
+                    user="user"
+                )
+                registry.add(trans)
+                all_removed.extend([(block.fragment_name, sym) for sym in set(removed)])
+
+        if all_removed:
+            st.success(f"✅ Удалены спецсимволы из {len(set(b for b,_ in all_removed))} блоков")
+            df = pd.DataFrame(all_removed, columns=["Фрагмент", "Символ"]).drop_duplicates()
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("Выбранные символы не найдены в текстах.")
+
+    def _apply_generate_html(self, block_id: str = None):
+        fm = st.session_state.fragment_manager
+        registry = st.session_state.transformation_registry
+        blocks = [next((b for b in fm.fragments if b.id == block_id), None)] if block_id else fm.fragments
+        blocks = [b for b in blocks if b is not None]
+
+        generated = 0
+        for block in blocks:
+            html = self.text_processor.convert_to_html(block.processed_text)
+            block.html_text = html
+            block.last_modified = datetime.now()
+            trans = TextTransformation(
+                block_id=block.id,
+                fragment_name=block.fragment_name,
+                transformation_type=TransformationType.HTML_GENERATION,
+                original="",
+                result=html[:100] + "..." if len(html) > 100 else html,
+                severity=SeverityLevel.INFO,
+                user="user"
+            )
+            registry.add(trans)
+            generated += 1
+
+        st.success(f"🌐 HTML сгенерирован для {generated} блоков")
+        if generated == 1 and block_id:
+            st.markdown(blocks[0].html_text, unsafe_allow_html=True)
+
+    def _check_all_errors(self):
+        """Полная проверка ошибок во всех блоках (без автоматического исправления)."""
+        fm = st.session_state.fragment_manager
+        registry = st.session_state.transformation_registry
+        errors_found = 0
+
+        for block in fm.fragments:
+            # 1. Проверка regular-блоков на отсутствие скобок
+            if block.block_type == 'regular':
+                missing = self.text_processor.check_missing_brackets(block.processed_text, block.block_type)
+                if missing:
+                    # Удаляем старые такие ошибки, добавляем новые
+                    block.errors = [e for e in block.errors if "отсутствует значение в квадратных скобках" not in e]
+                    block.errors.extend(missing)
+                    block.status = 'error'
+                    for err in missing:
+                        trans = TextTransformation(
+                            block_id=block.id,
+                            fragment_name=block.fragment_name,
+                            transformation_type=TransformationType.ERROR,
+                            original="",
+                            result="",
+                            meta={'message': err},
+                            severity=SeverityLevel.ERROR,
+                            user="system"
+                        )
+                        registry.add(trans)
+                    errors_found += len(missing)
+
+            # 2. Проверка non-regular блоков: все скобки должны соответствовать системным переменным
+            elif block.block_type != 'regular':
+                matches = self.text_processor.pattern.finditer(block.processed_text)
+                for match in matches:
+                    var_name = match.group(1).strip()
+                    var_lower = var_name.lower()
+                    # Проверяем, есть ли системная переменная
+                    found = any(sys_var.lower() == var_lower for sys_var in self.vm.system_vars.keys())
+                    if not found:
+                        err_msg = f"Неизвестная переменная '{var_name}' в non-regular блоке"
+                        if err_msg not in block.errors:
+                            block.errors.append(err_msg)
+                            block.status = 'error'
+                            trans = TextTransformation(
+                                block_id=block.id,
+                                fragment_name=block.fragment_name,
+                                transformation_type=TransformationType.ERROR,
+                                original="",
+                                result="",
+                                meta={'message': err_msg},
+                                severity=SeverityLevel.ERROR,
+                                user="system"
+                            )
+                            registry.add(trans)
+                        errors_found += 1
+
+            # Обновляем специальные символы (для информации)
+            block.special_symbols = self.text_processor._find_special_symbols(block.processed_text)
+
+        if errors_found:
+            st.error(f"❌ Найдено {errors_found} ошибок. Проверьте вкладку 'Проблемы'.")
+        else:
+            st.success("✅ Ошибок не найдено")
+
+    # ------------------------------------------------------------------
+    #                     СБРОС СОСТОЯНИЯ
+    # ------------------------------------------------------------------
+    def _reset_state(self):
+        """Полный сброс состояния фазы 6 (очистка session_state)."""
+        keys_to_clear = [
+            'fragment_manager',
+            'transformation_registry',
+            'units_manager',
+            'found_units',
+            'found_special_symbols',
+            'ui_state'
+        ]
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.success("✅ Состояние фазы 6 сброшено. Страница будет перезагружена.")
+        time.sleep(1)
+        st.rerun()
+
+    def _add_reset_button(self):
+        with st.sidebar:
+            st.divider()
+            st.write("### 🛑 Управление состоянием")
+            confirm_key = "confirm_reset"
+            # Создаем чекбокс и получаем его значение
+            confirm = st.checkbox("Подтвердите сброс", key=confirm_key, value=False)
+            if st.button("🔄 Сбросить состояние фазы 6", use_container_width=True, type="secondary"):
+                if confirm:
+                    self._reset_state()
+                else:
+                    st.warning("Поставьте галочку для подтверждения")
+
+    # ------------------------------------------------------------------
+    #                     ОСНОВНОЙ ИНТЕРФЕЙС
+    # ------------------------------------------------------------------
+    def display_main_interface(self):
+        st.title("🚀 Фаза 6: Подготовка к загрузке на сайт (ручной режим)")
+        st.markdown("---")
+
+        if 'app_data' not in st.session_state:
+            st.error("❌ Нет данных приложения. Завершите фазы 1-5.")
+            return
+
+        if not self._load_data():
+            return
+
+        self._migrate_fragments()
+
+        # Сканируем единицы и спецсимволы в текстах
+        st.session_state.found_units = self._scan_units_in_texts()
+        st.session_state.found_special_symbols = self._scan_special_symbols_in_texts()
+
+        self._manage_units()
+        self._manage_special_symbols()
+        self._add_reset_button()  # Кнопка сброса состояния
+
+        # Общие кнопки для массовых операций
+        with st.container():
+            st.subheader("🛠️ Массовые операции")
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                if st.button("🔄 Заменить переменные во всех блоках", use_container_width=True):
+                    self._apply_variable_replacement()
+            with col2:
+                if st.button("⚖️ Удалить выбранные единицы из всех блоков", use_container_width=True):
+                    units = st.session_state.ui_state.get('selected_units_global', [])
+                    self._apply_unit_removal(units_to_remove=units)
+            with col3:
+                if st.button("🌐 Сгенерировать HTML для всех блоков", use_container_width=True):
+                    self._apply_generate_html()
+            with col4:
+                if st.button("🔍 Проверить ошибки во всех блоках", use_container_width=True):
+                    self._check_all_errors()
+            with col5:
+                if st.button("🔧 Автоисправить regular-блоки", use_container_width=True):
+                    self._auto_insert_regular_blocks()
+
+        st.markdown("---")
+
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📤 Экспорт отчета",
+            "🏷️ Фрагменты",
+            "⚠️ Проблемы",
+            "📋 История замен",
+            "🧩 Шаблоны и HTML"
+        ])
+
+        with tab1:
+            self._display_export_interface()
+        with tab2:
+            self._display_fragments_interface()
+        with tab3:
+            self._display_issues_interface()
+        with tab4:
+            self._display_transformations_interface()
+        with tab5:
+            self._display_templates_interface()
+
+    # ------------------------------------------------------------------
+    #                     ЭКСПОРТ
+    # ------------------------------------------------------------------
+    def _display_export_interface(self):
+        st.header("📤 Экспорт отчета")
+        fm = st.session_state.fragment_manager
+        if not fm.fragments:
+            st.info("Нет данных для экспорта")
+            return
+
+        fmt = st.radio("Формат:", ["XLSX (Excel)", "JSON"], horizontal=True)
+        use_html = st.checkbox("Использовать HTML версию", value=st.session_state.ui_state.get('show_html', False))
+        st.session_state.ui_state['show_html'] = use_html
+        tmpl = fm.generate_template()
+
+        if fmt == "XLSX (Excel)":
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Фрагментов", len(fm.fragment_names))
+            col2.metric("Блоков", len(fm.fragments))
+            err_cnt = sum(len(f.errors) for f in fm.fragments)
+            col3.metric("Ошибок", err_cnt, delta_color="inverse")
+
+            if st.button("📥 Экспорт в Excel", type="primary", use_container_width=True):
+                with st.spinner("Создание Excel..."):
+                    excel = ExportManager.export_to_excel(fm, tmpl, use_html)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    st.download_button("⬇️ Скачать", data=excel,
+                                       file_name=f"отчет_{tmpl['category_code']}_{ts}.xlsx",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                       use_container_width=True)
+        else:
+            st.subheader("Экспорт в JSON")
+            fragments_data = [f.to_dict() for f in fm.fragments]
+            export_data = {
+                'timestamp': datetime.now().isoformat(),
+                'category': tmpl['category_code'],
+                'template': tmpl['template'],
+                'fragments': fragments_data,
+                'statistics': {
+                    'total_fragments': len(fm.fragment_names),
+                    'total_blocks': len(fm.fragments),
+                    'error_blocks': sum(1 for f in fm.fragments if f.errors),
+                    'warning_blocks': sum(1 for f in fm.fragments if f.warnings),
+                    'template_order': tmpl['order']
+                }
+            }
+            json_data = json.dumps(export_data, ensure_ascii=False, indent=2, default=str)
+            st.download_button("📥 Скачать JSON", data=json_data,
+                               file_name=f"отчет_{tmpl['category_code']}_{datetime.now().strftime('%Y%m%d')}.json",
+                               mime="application/json", use_container_width=True)
+
+    # ------------------------------------------------------------------
+    #                     ФРАГМЕНТЫ (СПИСОК И РЕДАКТОР)
+    # ------------------------------------------------------------------
+    def _display_fragments_interface(self):
+        st.header("🏷️ Управление фрагментами")
+        fm = st.session_state.fragment_manager
+
+        if not fm.fragments:
+            st.info("Нет фрагментов для отображения")
+            return
+
+        # Если выбран режим редактирования конкретного блока – показываем редактор
+        if st.session_state.ui_state.get('editing_mode') and st.session_state.ui_state.get('selected_block_id'):
+            block_id = st.session_state.ui_state['selected_block_id']
+            block = next((b for b in fm.fragments if b.id == block_id), None)
+            if block:
+                self._display_block_editor(block)
+                return
+            else:
+                st.session_state.ui_state['editing_mode'] = False
+                st.session_state.ui_state['selected_block_id'] = None
+
+        # Компактный вид - чекбокс
+        compact = st.checkbox("Компактный вид", value=st.session_state.ui_state.get('compact_view', True))
+        st.session_state.ui_state['compact_view'] = compact
+
+        # Фильтры
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            filter_type = st.selectbox("Тип блока", ["Все", "regular", "unique", "other"], key="frag_filter_type")
+        with col2:
+            filter_status = st.selectbox("Статус", ["Все", "pending", "error", "processed"], key="frag_filter_status")
+        with col3:
+            search_text = st.text_input("🔍 Поиск по тексту", value=st.session_state.ui_state.get('fragment_search', ''))
+            st.session_state.ui_state['fragment_search'] = search_text
+
+        # Применяем фильтры
+        filtered_blocks = fm.fragments.copy()
+        if filter_type != "Все":
+            filtered_blocks = [b for b in filtered_blocks if b.block_type == filter_type]
+        if filter_status != "Все":
+            filtered_blocks = [b for b in filtered_blocks if b.status == filter_status]
+        if search_text:
+            search_lower = search_text.lower()
+            filtered_blocks = [
+                b for b in filtered_blocks
+                if search_lower in b.original_text.lower() or search_lower in b.processed_text.lower()
+            ]
+
+        # Пагинация
+        per_page = st.selectbox("Записей на странице", [10, 20, 50, 100],
+                                index=1, key="frag_per_page")
+        st.session_state.ui_state['fragments_per_page'] = per_page
+
+        total_blocks = len(filtered_blocks)
+        total_pages = max(1, (total_blocks + per_page - 1) // per_page)
+        current_page = st.session_state.ui_state.get('fragments_page', 1)
+        if current_page > total_pages:
+            current_page = total_pages
+            st.session_state.ui_state['fragments_page'] = current_page
+
+        # Навигация
+        col_prev, col_page, col_next, col_info = st.columns([1, 2, 1, 3])
+        with col_prev:
+            if st.button("◀ Предыдущая", disabled=current_page <= 1, key="prev_page"):
+                st.session_state.ui_state['fragments_page'] = current_page - 1
+                st.rerun()
+        with col_page:
+            page = st.number_input("Страница", min_value=1, max_value=total_pages,
+                                   value=current_page, key="frag_page_input")
+            if page != current_page:
+                st.session_state.ui_state['fragments_page'] = page
+                st.rerun()
+        with col_next:
+            if st.button("Следующая ▶", disabled=current_page >= total_pages, key="next_page"):
+                st.session_state.ui_state['fragments_page'] = current_page + 1
+                st.rerun()
+        with col_info:
+            st.write(f"Всего блоков: {total_blocks}, страниц: {total_pages}")
+
+        start_idx = (current_page - 1) * per_page
+        end_idx = start_idx + per_page
+        page_blocks = filtered_blocks[start_idx:end_idx]
+
+        for block in page_blocks:
+            self._render_block_card(block, compact)
+
+    def _render_block_card(self, block: FragmentBlock, compact: bool = True):
+        """Карточка блока с кнопками операций."""
+        if compact:
+            with st.container(border=True):
+                cols = st.columns([2, 1, 1, 1, 1])
+                cols[0].write(f"**{block.fragment_name}** ({block.block_type})")
+                cols[1].write(f"Статус: {block.status}")
+                cols[2].write(f"Ошибок: {len(block.errors)}")
+                if cols[3].button("✏️", key=f"edit_card_{block.id}", use_container_width=True):
+                    st.session_state.ui_state['selected_block_id'] = block.id
+                    st.session_state.ui_state['editing_mode'] = True
+                    st.rerun()
+                with cols[4].popover("⚙️", use_container_width=True):
+                    if st.button("🔄 Заменить переменные", key=f"replace_{block.id}", use_container_width=True):
+                        self._apply_variable_replacement(block.id)
+                        st.rerun()
+                    if st.button("🔧 Добавить значение", key=f"autofix_{block.id}", use_container_width=True):
+                        self._auto_insert_regular_blocks(block.id)
+                        st.rerun()
+                    if st.button("⚖️ Удалить единицы", key=f"remove_{block.id}", use_container_width=True):
+                        units = st.session_state.ui_state.get('selected_units_global', [])
+                        self._apply_unit_removal(block.id, units)
+                        st.rerun()
+                    if st.button("🌐 HTML", key=f"html_{block.id}", use_container_width=True):
+                        self._apply_generate_html(block.id)
+                        st.rerun()
+                    if st.button("⚡ Удалить спецсимволы", key=f"spec_{block.id}", use_container_width=True):
+                        symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+                        self._apply_special_symbol_removal(block.id, symbols)
+                        st.rerun()
+                st.caption(f"{block.characteristic_name or '-'}: {block.characteristic_value or '-'}")
+        else:
+            with st.container(border=True):
+                cols = st.columns([3, 1, 1, 1])
+                cols[0].write(f"**{block.fragment_name}** ({block.block_type})")
+                cols[1].write(f"Статус: {block.status}")
+                cols[2].write(f"Ошибок: {len(block.errors)}")
+                if cols[3].button("✏️ Редактировать", key=f"edit_card_{block.id}", use_container_width=True):
+                    st.session_state.ui_state['selected_block_id'] = block.id
+                    st.session_state.ui_state['editing_mode'] = True
+                    st.rerun()
+
+                col_op1, col_op2, col_op3, col_op4, col_op5, _ = st.columns([1, 1, 1, 1, 1, 1])
+                with col_op1:
+                    if st.button("🔄 Заменить переменные", key=f"replace_{block.id}", use_container_width=True):
+                        self._apply_variable_replacement(block.id)
+                        st.rerun()
+                with col_op2:
+                    if st.button("🔧 Добавить значение", key=f"autofix_{block.id}", use_container_width=True):
+                        self._auto_insert_regular_blocks(block.id)
+                        st.rerun()
+                with col_op3:
+                    if st.button("⚖️ Удалить единицы", key=f"remove_{block.id}", use_container_width=True):
+                        units = st.session_state.ui_state.get('selected_units_global', [])
+                        self._apply_unit_removal(block.id, units)
+                        st.rerun()
+                with col_op4:
+                    if st.button("🌐 HTML", key=f"html_{block.id}", use_container_width=True):
+                        self._apply_generate_html(block.id)
+                        st.rerun()
+                with col_op5:
+                    if st.button("⚡ Удалить спецсимволы", key=f"spec_{block.id}", use_container_width=True):
+                        symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+                        self._apply_special_symbol_removal(block.id, symbols)
+                        st.rerun()
+
+                st.caption(f"ID: {block.id[:8]} | Хар-ка: {block.characteristic_name or '-'} | Знач: {block.characteristic_value or '-'}")
+                with st.expander("👁️ Текущий текст"):
+                    st.text(block.processed_text[:300] + ("..." if len(block.processed_text) > 300 else ""))
+
+    def _display_block_editor(self, block: FragmentBlock):
+        st.subheader(f"✏️ Редактирование: {block.fragment_name}")
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.write(f"**Тип:** {block.block_type}")
+        col2.write(f"**Хар-ка:** {block.characteristic_name or '-'}")
+        col3.write(f"**Значение:** {block.characteristic_value or '-'}")
+        col4.write(f"**Статус:** {block.status}")
+
+        with st.expander("📊 Сравнение: исходный → обработанный", expanded=False):
+            col_before, col_after = st.columns(2)
+            with col_before:
+                st.markdown("**До обработки:**")
+                st.code(block.original_text if block.original_text else "(пусто)")
+            with col_after:
+                st.markdown("**После обработки (текущий результат):**")
+                st.code(block.processed_text if block.processed_text else "(пусто)")
+                if block.html_text:
+                    st.markdown("**HTML версия:**")
+                    st.code(block.html_text[:300] + ("..." if len(block.html_text) > 300 else ""))
+
+        if block.errors:
+            with st.expander(f"❌ Ошибки ({len(block.errors)})", expanded=False):
+                for e in block.errors:
+                    st.write(f"- {e}")
+        if block.special_symbols:
+            with st.expander(f"⚡ Спецсимволы ({len(block.special_symbols)})", expanded=False):
+                for sym, st_pos, end_pos in block.special_symbols[:20]:
+                    st.write(f"- '{sym}' на {st_pos}-{end_pos}")
+                if len(block.special_symbols) > 20:
+                    st.write(f"... и ещё {len(block.special_symbols)-20}")
+
+        st.divider()
+
+        # --- КНОПКИ ОПЕРАЦИЙ ---
+        st.subheader("🛠️ Операции над текстом")
+        col_op1, col_op2, col_op3, col_op4, col_op5 = st.columns(5)
+        with col_op1:
+            if st.button("🔄 Заменить переменные", key=f"editor_replace_{block.id}", use_container_width=True):
+                self._apply_variable_replacement(block.id)
+                st.rerun()
+        with col_op2:
+            if st.button("🔧 Добавить значение", key=f"editor_autofix_{block.id}", use_container_width=True):
+                self._auto_insert_regular_blocks(block.id)
+                st.rerun()
+        with col_op3:
+            if st.button("⚖️ Удалить единицы", key=f"editor_remove_{block.id}", use_container_width=True):
+                units = st.session_state.ui_state.get('selected_units_global', [])
+                self._apply_unit_removal(block.id, units)
+                st.rerun()
+        with col_op4:
+            if st.button("🌐 HTML", key=f"editor_html_{block.id}", use_container_width=True):
+                self._apply_generate_html(block.id)
+                st.rerun()
+        with col_op5:
+            if st.button("⚡ Удалить спецсимволы", key=f"editor_spec_{block.id}", use_container_width=True):
+                symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+                self._apply_special_symbol_removal(block.id, symbols)
+                st.rerun()
+
+        st.divider()
+
+        # --- ПАНЕЛЬ ВСТАВКИ ПЕРЕМЕННЫХ ---
+        st.subheader("🔄 Вставка переменных")
+        textarea_key = f"editor_text_{block.id}"
+        if textarea_key not in st.session_state:
+            st.session_state[textarea_key] = block.processed_text
+
+        col_pos1, col_pos2 = st.columns([2, 2])
+        with col_pos1:
+            insert_mode = st.radio(
+                "Позиция вставки:",
+                ["в конец", "в начало", "после слова"],
+                horizontal=True,
+                key=f"ins_mode_{block.id}"
+            )
+        with col_pos2:
+            word_index = 0
+            if insert_mode == "после слова":
+                words = st.session_state[textarea_key].split()
+                if words:
+                    word_index = st.selectbox(
+                        "После какого слова:",
+                        options=list(range(len(words))),
+                        format_func=lambda i: f"{i + 1}. {words[i][:20]}",
+                        key=f"ins_word_{block.id}"
+                    )
+                else:
+                    st.info("Текст пуст, вставка в конец")
+                    insert_mode = "в конец"
+
+        suggestions = self.vm.get_variable_suggestions()
+        city_vars = [v for v in suggestions if 'город' in v['name'].lower()]
+        product_vars = [v for v in suggestions if 'товар' in v['name'].lower()]
+        category_vars = [v for v in suggestions if 'категория' in v['name'].lower()]
+        prop_var = next((v for v in suggestions if v['type'] == 'prop'), None)
+        frag_var = next((v for v in suggestions if v['type'] == 'fragment'), None)
+        other_vars = [v for v in suggestions if v not in city_vars + product_vars + category_vars
+                      and v != prop_var and v != frag_var]
+
+        def insert_variable(text: str, var_value: str, mode: str, word_idx: int = 0) -> str:
+            if mode == "в начало":
+                return var_value + " " + text if text else var_value
+            elif mode == "после слова" and word_idx < len(text.split()):
+                parts = text.split()
+                parts.insert(word_idx + 1, var_value)
+                return " ".join(parts)
+            else:
+                if text and not text.endswith(' '):
+                    text += ' '
+                return text + var_value
+
+        col_city, col_prod, col_cat, col_propfrag, col_other = st.columns(5)
+
+        with col_city:
+            with st.popover("🌆 Город", use_container_width=True):
+                for idx, var in enumerate(city_vars):
+                    if st.button(var['value'], key=f"city_{block.id}_{idx}", use_container_width=True):
+                        st.session_state[textarea_key] = insert_variable(
+                            st.session_state[textarea_key],
+                            var['value'],
+                            insert_mode,
+                            word_index if insert_mode == "после слова" else 0
+                        )
+                        st.rerun()
+        with col_prod:
+            with st.popover("🏷️ Товар", use_container_width=True):
+                for idx, var in enumerate(product_vars):
+                    if st.button(var['value'], key=f"prod_{block.id}_{idx}", use_container_width=True):
+                        st.session_state[textarea_key] = insert_variable(
+                            st.session_state[textarea_key],
+                            var['value'],
+                            insert_mode,
+                            word_index if insert_mode == "после слова" else 0
+                        )
+                        st.rerun()
+        with col_cat:
+            with st.popover("📂 Категория", use_container_width=True):
+                for idx, var in enumerate(category_vars):
+                    if st.button(var['value'], key=f"cat_{block.id}_{idx}", use_container_width=True):
+                        st.session_state[textarea_key] = insert_variable(
+                            st.session_state[textarea_key],
+                            var['value'],
+                            insert_mode,
+                            word_index if insert_mode == "после слова" else 0
+                        )
+                        st.rerun()
+        with col_propfrag:
+            col_p, col_f = st.columns(2)
+            with col_p:
+                if prop_var and st.button("prop", key=f"prop_{block.id}", use_container_width=True):
+                    st.session_state[textarea_key] = insert_variable(
+                        st.session_state[textarea_key],
+                        prop_var['value'],
+                        insert_mode,
+                        word_index if insert_mode == "после слова" else 0
+                    )
+                    st.rerun()
+            with col_f:
+                if frag_var and st.button("fragment", key=f"frag_{block.id}", use_container_width=True):
+                    st.session_state[textarea_key] = insert_variable(
+                        st.session_state[textarea_key],
+                        frag_var['value'],
+                        insert_mode,
+                        word_index if insert_mode == "после слова" else 0
+                    )
+                    st.rerun()
+        with col_other:
+            with st.popover("📝 Прочие", use_container_width=True):
+                for idx, var in enumerate(other_vars):
+                    if st.button(var['name'], key=f"other_{block.id}_{idx}", use_container_width=True):
+                        st.session_state[textarea_key] = insert_variable(
+                            st.session_state[textarea_key],
+                            var['value'],
+                            insert_mode,
+                            word_index if insert_mode == "после слова" else 0
+                        )
+                        st.rerun()
+
+        st.divider()
+
+        # --- РЕДАКТОР ТЕКСТА ---
+        edited_text = st.text_area(
+            "Текст блока:",
+            value=st.session_state[textarea_key],
+            height=200,
+            key=textarea_key,
+            label_visibility="collapsed"
+        )
+        if st.session_state[textarea_key] != edited_text:
+            st.session_state[textarea_key] = edited_text
+
+        # --- КНОПКИ СОХРАНЕНИЯ / ОТМЕНЫ ---
+        col_save, col_cancel, col_delete = st.columns(3)
+        with col_save:
+            if st.button("💾 Сохранить изменения вручную", type="primary", key=f"save_{block.id}", use_container_width=True):
+                old_text = block.processed_text
+                block.processed_text = edited_text
+                block.last_modified = datetime.now()
+                # Обновляем ошибки
+                missing = self.text_processor.check_missing_brackets(block.processed_text, block.block_type)
+                block.errors = [e for e in block.errors if "отсутствует значение в квадратных скобках" not in e]
+                if missing:
+                    block.errors.extend(missing)
+                    block.status = 'error'
+                else:
+                    block.status = 'fixed' if not block.errors else block.status
+                # Обновляем спецсимволы
+                block.special_symbols = self.text_processor._find_special_symbols(block.processed_text)
+                trans = TextTransformation(
+                    block_id=block.id,
+                    fragment_name=block.fragment_name,
+                    transformation_type=TransformationType.MANUAL_CORRECTION,
+                    original=old_text,
+                    result=edited_text,
+                    severity=SeverityLevel.INFO,
+                    user="user"
+                )
+                st.session_state.transformation_registry.add(trans)
+                st.success("✅ Текст сохранён")
+                time.sleep(0.5)
+                st.session_state.ui_state['editing_mode'] = False
+                st.session_state.ui_state['selected_block_id'] = None
+                if textarea_key in st.session_state:
+                    del st.session_state[textarea_key]
+                st.rerun()
+        with col_cancel:
+            if st.button("🚫 Отмена", key=f"cancel_{block.id}", use_container_width=True):
+                st.session_state.ui_state['editing_mode'] = False
+                st.session_state.ui_state['selected_block_id'] = None
+                if textarea_key in st.session_state:
+                    del st.session_state[textarea_key]
+                st.rerun()
+        with col_delete:
+            if st.button("🗑️ Удалить блок", key=f"delete_{block.id}", use_container_width=True):
+                if st.session_state.fragment_manager.delete_block(block.id):
+                    st.success("Блок удалён")
+                    st.session_state.ui_state['editing_mode'] = False
+                    st.session_state.ui_state['selected_block_id'] = None
+                    if textarea_key in st.session_state:
+                        del st.session_state[textarea_key]
+                    st.rerun()
+                else:
+                    st.error("Не удалось удалить блок")
+
+    # ------------------------------------------------------------------
+    #                     ПРОБЛЕМЫ И ОШИБКИ
+    # ------------------------------------------------------------------
+    def _display_issues_interface(self):
+        st.header("⚠️ Проблемы и ошибки")
+        fm = st.session_state.fragment_manager
+
+        # Обновляем ошибки и спецсимволы (без автоисправления)
+        for f in fm.fragments:
+            missing = self.text_processor.check_missing_brackets(f.processed_text, f.block_type)
+            f.errors = [e for e in f.errors if "отсутствует значение в квадратных скобках" not in e]
+            if missing:
+                f.errors.extend(missing)
+                f.status = 'error'
+            f.special_symbols = self.text_processor._find_special_symbols(f.processed_text)
+
+        # Собираем все проблемы
+        all_issues = []
+        for f in fm.fragments:
+            for err in f.errors:
+                all_issues.append({
+                    'block_id': f.id,
+                    'fragment_name': f.fragment_name,
+                    'issue_type': 'error',
+                    'message': err,
+                    'block': f
+                })
+            for warn in f.warnings:
+                all_issues.append({
+                    'block_id': f.id,
+                    'fragment_name': f.fragment_name,
+                    'issue_type': 'warning',
+                    'message': warn,
+                    'block': f
+                })
+            for sym, st_pos, end_pos in f.special_symbols:
+                all_issues.append({
+                    'block_id': f.id,
+                    'fragment_name': f.fragment_name,
+                    'issue_type': 'special_symbol',
+                    'message': f"Символ '{sym}' на {st_pos}-{end_pos}",
+                    'block': f,
+                    'symbol': sym
+                })
+
+        if not all_issues:
+            st.success("🎉 Проблем не найдено!")
+            return
+
+        # Кнопка повторной проверки
+        if st.button("🔄 Повторная проверка", key="recheck_issues"):
+            self._check_all_errors()
+            st.rerun()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            issue_filter = st.selectbox("Тип проблемы", ["Все", "error", "warning", "special_symbol"],
+                                        key="issue_type_filter")
+        with col2:
+            frag_filter = st.selectbox("Фрагмент", ["Все"] + sorted(fm.fragment_names), key="issue_frag_filter")
+
+        filtered = all_issues
+        if issue_filter != "Все":
+            filtered = [i for i in filtered if i['issue_type'] == issue_filter]
+        if frag_filter != "Все":
+            filtered = [i for i in filtered if i['fragment_name'] == frag_filter]
+
+        st.write(f"Найдено проблем: {len(filtered)}")
+
+        # Группировка по блокам для удобства
+        issues_by_block = defaultdict(list)
+        for issue in filtered:
+            issues_by_block[issue['block_id']].append(issue)
+
+        for block_id, issues in issues_by_block.items():
+            block = next((b for b in fm.fragments if b.id == block_id), None)
+            if not block:
+                continue
+            with st.container(border=True):
+                st.write(f"**{block.fragment_name}** (ID: {block_id[:8]})")
+                for issue in issues:
+                    icon = "❌" if issue['issue_type'] == 'error' else "⚠️" if issue['issue_type'] == 'warning' else "⚡"
+                    st.write(f"{icon} {issue['message']}")
+                if st.button("✏️ Исправить", key=f"fix_block_{block_id}", use_container_width=True):
+                    st.session_state.ui_state['selected_block_id'] = block_id
+                    st.session_state.ui_state['editing_mode'] = True
+                    st.rerun()
+
+    # ------------------------------------------------------------------
+    #                     ИСТОРИЯ ТРАНСФОРМАЦИЙ
+    # ------------------------------------------------------------------
+    def _display_transformations_interface(self):
+        st.header("📋 История замен и трансформаций")
+        registry = st.session_state.transformation_registry
+
+        if not registry.transformations:
+            st.info("Нет записей о трансформациях")
+            return
+
+        col1, col2 = st.columns(2)
+        with col1:
+            type_filter = st.selectbox(
+                "Тип трансформации",
+                ["Все"] + [t.value for t in TransformationType],
+                key="trans_type_filter"
+            )
+        with col2:
+            severity_filter = st.selectbox(
+                "Важность",
+                ["Все"] + [s.value for s in SeverityLevel],
+                key="trans_sev_filter"
+            )
+
+        filtered = registry.transformations
+        if type_filter != "Все":
+            filtered = [t for t in filtered if t.transformation_type.value == type_filter]
+        if severity_filter != "Все":
+            filtered = [t for t in filtered if t.severity.value == severity_filter]
+
+        data = []
+        for t in filtered:
+            data.append({
+                "Время": t.timestamp.strftime("%H:%M:%S"),
+                "Фрагмент": t.fragment_name,
+                "Тип": t.transformation_type.value,
+                "Было": t.original[:50] + ("..." if len(t.original) > 50 else ""),
+                "Стало": t.result[:50] + ("..." if len(t.result) > 50 else ""),
+                "Важность": t.severity.value,
+                "Пользователь": t.user
+            })
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True, height=500)
+
+        st.subheader("Статистика")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Всего операций", len(registry.transformations))
+        col2.metric("Замен переменных", len([t for t in registry.transformations if
+                                             t.transformation_type == TransformationType.VARIABLE_REPLACE]))
+        col3.metric("Ошибок", len(registry.get_errors()))
+        col4.metric("Предупреждений", len(registry.get_warnings()))
+
+    # ------------------------------------------------------------------
+    #                     ШАБЛОНЫ И HTML
+    # ------------------------------------------------------------------
+    def _display_templates_interface(self):
+        st.header("🧩 Шаблоны и HTML предпросмотр")
+        fm = st.session_state.fragment_manager
+
+        if not fm.fragment_names:
+            st.info("Нет фрагментов для построения шаблона")
+            return
+
+        tab1, tab2 = st.tabs(["Конструктор шаблона", "HTML предпросмотр"])
+
+        with tab1:
+            self._display_template_builder()
+        with tab2:
+            self._display_html_preview()
+
+    def _display_template_builder(self):
+        fm = st.session_state.fragment_manager
+        cat_code = st.text_input("Код категории:", value=fm.category, key="template_cat_code")
+
+        st.subheader("Порядок фрагментов")
+        frags = sorted(fm.fragment_names)
+        if not fm.template_order:
+            fm.template_order = frags.copy()
+
+        selected = st.multiselect(
+            "Выберите и упорядочьте фрагменты:",
+            frags,
+            default=fm.template_order,
+            key="template_order_selector"
+        )
+        if selected:
+            fm.template_order = selected
+            tmpl_data = fm.generate_template(cat_code)
+            template_text = tmpl_data['template']
+
+            st.write("**Итоговый шаблон:**")
+            st.code(template_text, language="text")
+
+            col1, col2, col3 = st.columns(3)
+            col1.button("📋 Копировать", key="copy_template")
+            col2.download_button(
+                "💾 Скачать шаблон",
+                data=template_text,
+                file_name=f"шаблон_{cat_code}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+            if col3.button("🔄 Автоупорядочить", use_container_width=True):
+                priority = ['заголовок', 'название', 'описание', 'характеристик', 'параметр', 'примечание']
+                ordered = []
+                for kw in priority:
+                    for f in frags:
+                        if kw in f.lower() and f not in ordered:
+                            ordered.append(f)
+                for f in frags:
+                    if f not in ordered:
+                        ordered.append(f)
+                fm.template_order = ordered
+                st.rerun()
+
+    def _display_html_preview(self):
+        fm = st.session_state.fragment_manager
+
+        st.subheader("🔄 Предпросмотр HTML")
+        st.info("HTML генерируется из обработанного текста с заменой переменных на заглушки. "
+                "Для полноценного отображения необходимы реальные данные на сайте.")
+
+        mode = st.radio("Режим:", ["Все фрагменты", "Выбрать фрагмент"], horizontal=True, key="html_mode")
+
+        if mode == "Все фрагменты":
+            combined_html = []
+            for f in fm.fragments:
+                if f.html_text:
+                    combined_html.append(f"<!-- Фрагмент: {f.fragment_name} -->")
+                    combined_html.append(f.html_text)
+                    combined_html.append("<hr>")
+            if not combined_html:
+                st.info("Нет сгенерированного HTML. Сначала сгенерируйте HTML для блоков.")
+                return
+            html_all = "\n".join(combined_html)
+            st.markdown("**Предпросмотр (рендер):**")
+            st.markdown(html_all, unsafe_allow_html=True)
+            with st.expander("📄 Исходный HTML код"):
+                st.code(html_all, language="html")
+            st.download_button(
+                "📥 Скачать полный HTML",
+                data=html_all,
+                file_name=f"все_фрагменты_{fm.category}.html",
+                mime="text/html"
+            )
+        else:
+            frag_names = sorted(fm.fragment_names)
+            if not frag_names:
+                return
+            selected_frag = st.selectbox("Выберите фрагмент:", frag_names, key="html_frag_select")
+            blocks = fm.get_fragment_blocks(selected_frag)
+            html_blocks = [b.html_text for b in blocks if b.html_text]
+            if not html_blocks:
+                st.info("HTML для этого фрагмента не сгенерирован.")
+                return
+            combined_html = []
+            for b in blocks:
+                if b.html_text:
+                    combined_html.append(f"<!-- Блок {b.id[:8]} -->")
+                    combined_html.append(b.html_text)
+            html_frag = "\n".join(combined_html)
+            st.markdown("**Предпросмотр (рендер):**")
+            st.markdown(html_frag, unsafe_allow_html=True)
+            with st.expander("📄 Исходный HTML код"):
+                st.code(html_frag, language="html")
+            st.download_button(
+                "📥 Скачать HTML фрагмента",
+                data=html_frag,
+                file_name=f"{selected_frag}.html",
+                mime="text/html"
+            )
+
+
+def main():
+    if 'current_phase' not in st.session_state:
+        st.session_state.current_phase = 6
+
     if 'app_data' not in st.session_state:
         st.error("❌ Нет данных приложения")
-        st.info("Вернитесь к фазе 1 для создания проекта")
-
-        if st.button("← Вернуться к фазе 1", use_container_width=True):
+        st.info("Завершите предыдущие фазы")
+        if st.button("← Вернуться к началу", use_container_width=True):
             st.session_state.current_phase = 1
             st.rerun()
         return
 
-    app_data = st.session_state.app_data
-
-    # Проверяем наличие данных фазы 5
-    if 'phase5' not in app_data or not app_data['phase5']:
-        st.error("❌ Нет данных из фазы 5")
-        st.info("""
-        Для работы фазы 6 необходимо:
-        1. Завершить фазу 5
-        2. Сохранить данные для фазы 6 (кнопка "Сохранить данные для фазы 6" в фазе 5)
-        """)
-
-        if st.button("← Вернуться к фазе 5", use_container_width=True):
-            st.session_state.current_phase = 5
-            st.rerun()
-        return
-
-    phase5_data = app_data['phase5']
-
-    # Проверяем, завершена ли фаза 5
-    if not phase5_data.get('phase_completed', False):
-        st.warning("⚠️ Фаза 5 не завершена полностью")
-        st.info("Вернитесь в фазу 5 и завершите генерацию текстов")
-
-        if st.button("← Вернуться к фазе 5", use_container_width=True):
-            st.session_state.current_phase = 5
-            st.rerun()
-        return
-
-    # Показываем информацию о данных
-    st.write(f"**Текущая фаза:** 6")
-
-    if 'statistics' in phase5_data:
-        stats = phase5_data['statistics']
-        success_count = stats.get('success', 0)
-        st.success(f"✅ Данные из фазы 5 готовы")
-        st.write(f"**Успешно сгенерировано:** {success_count} текстов")
-
-    # Подготавливаем input_data для процессора
-    input_data = {
-        'phase5_data': phase5_data,
-        'phase1_data': app_data.get('phase1', {}),
-        'phase2_data': app_data.get('phase2', {}),
-        'category': app_data.get('category', ''),
-        'project_name': app_data.get('project_name', '')
-    }
-
-    # Создаем псевдо-app_state для совместимости
-    class AppState:
-        def get_phase_data(self, phase_num):
-            if phase_num == 5:
-                return phase5_data
-            elif phase_num == 1:
-                return app_data.get('phase1', {})
-            elif phase_num == 2:
-                return app_data.get('phase2', {})
-            return {}
-
-    app_state = AppState()
-
-    # Инициализируем процессор
-    processor = Phase6EnhancedProcessor(app_state, input_data)
-
-    # Автоматически загружаем данные при первом входе
-    if not st.session_state.phase6_enhanced_data.get('fragments_processed', False):
-        st.info("Данные из фазы 5 не обработаны. Нажмите кнопку ниже, чтобы начать.")
-
-        if st.button("🚀 Начать обработку данных", type="primary", use_container_width=True):
-            with st.spinner("Обработка данных из фазы 5..."):
-                if processor.load_and_process_data():
-                    st.success("✅ Данные успешно обработаны!")
-                    st.rerun()
-                else:
-                    st.error("❌ Не удалось обработать данные")
-        return
-
-    # Если данные уже обработаны, показываем основной интерфейс
-    processor.main_interface()
+    interface = Phase6Interface()
+    interface.display_main_interface()
 
 
 if __name__ == "__main__":
