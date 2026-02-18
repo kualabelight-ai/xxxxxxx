@@ -606,8 +606,11 @@ def main():
         with col_save1:
             if st.button("💾 Сохранить маркеры", type="primary", use_container_width=True):
                 if st.session_state.selected_category and st.session_state.phase2_markers:
-                    st.session_state.markers_data[
-                        st.session_state.selected_category] = st.session_state.phase2_markers.copy()
+                    # Берём существующие маркеры для этой категории (если есть)
+                    existing = st.session_state.markers_data.get(st.session_state.selected_category, [])
+                    # Объединяем с текущими выбранными, убираем дубликаты
+                    updated = list(set(existing + st.session_state.phase2_markers))
+                    st.session_state.markers_data[st.session_state.selected_category] = updated
 
                     if save_markers(st.session_state.markers_data):
                         st.success(f"✅ Маркеры для категории '{st.session_state.selected_category}' сохранены!")

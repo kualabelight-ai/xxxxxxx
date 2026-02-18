@@ -693,45 +693,220 @@ def main():
         st.session_state.dynamic_var_manager = DynamicVariableManager()
 
     # --- Боковая панель ---
-    with st.sidebar:
-        st.header("⚙️ Настройки фазы 3")
-        st.markdown("""
-        Здесь вы можете редактировать:
-        - 📋 Шаблоны промптов (блоки)
-        - 🔧 Переменные внутри блоков
-        - ⚙️ Настройки генерации
-        """)
 
-        st.divider()
-        if st.button("🚀 Перейти к генерации промптов",
-                     use_container_width=True,
-                     help="Открыть фазу 4 для генерации промптов на основе этих блоков"):
-            if 'current_phase' in st.session_state:
-                st.session_state.current_phase = 4
-            else:
-                st.session_state.current_phase = 4
-            st.rerun()
-
-        st.info("""
-        **Как работать с фазами:**
-        1. 📝 Фаза 3: Создайте/отредактируйте блоки здесь
-        2. 🚀 Фаза 4: Перейдите в фазу 4 для генерации промптов
-        3. 🔄 Изменения здесь сразу будут доступны в фазе 4
-        """)
 
     # --- Основной контент ---
     show_edit_mode()
 
+def show_ai_variables_overview():
+    st.subheader("🤖 Все AI-переменные")
 
+    if 'ai_instruction_manager' not in st.session_state:
+        init_ai_managers()
+
+    # Получаем текущую категорию
+    phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
+    current_category = phase2_data.get('category', '')
+    if not current_category:
+        st.warning("⚠️ Категория не загружена. Статус и предпросмотр будут недоступны. Загрузите данные в фазе 2.")
+
+    blocks = st.session_state.block_manager.get_all_blocks()
+    ai_vars = []
+    for block_id, block in blocks.items():
+        variables_data = block.get("variables_data", {})
+        for var_name, var_data in variables_data.items():
+            if var_data.get("type") == "ai":
+                ai_vars.append((block_id, block, var_name, var_data))
+
+    if not ai_vars:
+        st.info("Нет AI-переменных. Создайте их во вкладке «Редактирование статических переменных» → AI.")
+        return
+
+    # --- Кнопки управления выбором ---
+    col1, col2, col3, col4 = st.columns([1, 1, 2, 4])
+    with col1:
+        if st.button("✅ Выбрать всё", key="select_all_ai", use_container_width=True):
+            for b_id, _, v_name, _ in ai_vars:
+                st.session_state[f"chk_{b_id}_{v_name}"] = True
+            st.rerun()
+    with col2:
+        if st.button("❌ Снять всё", key="deselect_all_ai", use_container_width=True):
+            for b_id, _, v_name, _ in ai_vars:
+                st.session_state[f"chk_{b_id}_{v_name}"] = False
+            st.rerun()
+    with col3:
+        if st.button("🚀 Массовая генерация", type="primary", key="mass_gen_ai", use_container_width=True):
+            selected = []
+            for b_id, _, v_name, _ in ai_vars:
+                if st.session_state.get(f"chk_{b_id}_{v_name}", False):
+                    selected.append((b_id, v_name))
+            if selected:
+                st.session_state.ai_mass_selected = selected
+                st.session_state.ai_mass_generation_requested = True
+                st.rerun()
+            else:
+                st.warning("Не выбрано ни одной переменной")
+    with col4:
+        st.caption("Выберите переменные для массовой генерации")
+
+    st.divider()
+
+    # --- Заголовки таблицы ---
+    cols = st.columns([0.5, 2, 2, 1, 2, 3, 3])  # Увеличили последнюю колонку для двух кнопок
+    cols[0].write("")
+    cols[1].write("**Переменная**")
+    cols[2].write("**Блок**")
+    cols[3].write("**Тип**")
+    cols[4].write("**Статус**")
+    cols[5].write("**Предпросмотр (для текущей категории)**")
+    cols[6].write("**Действия**")
+
+    # --- Строки ---
+    for block_id, block, var_name, var_data in ai_vars:
+        col_chk, col_var, col_block, col_type, col_status, col_preview, col_action = st.columns([0.5, 2, 2, 1, 2, 3, 3])
+
+        with col_chk:
+            default_val = st.session_state.get(f"chk_{block_id}_{var_name}", False)
+            st.checkbox(
+                f"Выбрать {var_name}",
+                value=default_val,
+                key=f"chk_{block_id}_{var_name}",
+                label_visibility="collapsed"
+            )
+
+        with col_var:
+            st.write(f"`{var_name}`")
+
+        with col_block:
+            st.write(block.get("name", block_id)[:30])
+
+        with col_type:
+            btype = block.get("block_type", "other")
+            st.write("📊" if btype == "characteristic" else "📄")
+
+        with col_status:
+            if has_ai_values(block_id, var_name):
+                st.success("✅ сгенерирована")
+            else:
+                st.error("❌ не сгенерирована")
+
+        with col_preview:
+            preview = ""
+            if 'ai_instruction_manager' in st.session_state and current_category:
+                ai_mgr = st.session_state.ai_instruction_manager
+                if block_id in ai_mgr.instructions and var_name in ai_mgr.instructions[block_id]:
+                    for ctx_data in ai_mgr.instructions[block_id][var_name].values():
+                        context = ctx_data.get("context", {})
+                        if context.get("категория") == current_category:
+                            values = ctx_data.get("values", [])
+                            if values:
+                                preview = values[0][:100] + ("..." if len(values[0]) > 100 else "")
+                                break
+            if preview:
+                st.write(preview)
+            else:
+                st.caption("нет для этой категории")
+
+        with col_action:
+            subcol1, subcol2 = st.columns(2)
+            with subcol1:
+                if st.button("🚀", key=f"gen_{block_id}_{var_name}", help="Генерировать"):
+                    st.session_state.ai_overview_selected = (block_id, var_name)
+                    st.rerun()
+            with subcol2:
+                if st.button("📋", key=f"view_{block_id}_{var_name}", help="Просмотреть все инструкции"):
+                    st.session_state.ai_view_selected = (block_id, var_name)
+                    st.rerun()
+
+    st.divider()
+
+    # --- Массовая генерация (без изменений) ---
+    if st.session_state.get("ai_mass_generation_requested", False):
+        selected = st.session_state.get("ai_mass_selected", [])
+        if not selected:
+            st.warning("Нет выбранных переменных")
+            st.session_state.ai_mass_generation_requested = False
+        else:
+            st.session_state.ai_mass_generation_requested = False
+            with st.spinner("Массовая генерация..."):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                results_log = []
+                for i, (b_id, v_name) in enumerate(selected):
+                    status_text.text(f"Обработка {i+1}/{len(selected)}: {b_id} / {v_name}")
+                    block = st.session_state.block_manager.get_block(b_id)
+                    if block is None:
+                        results_log.append({"block": b_id, "var": v_name, "success": 0, "errors": 1})
+                        progress_bar.progress((i + 1) / len(selected))
+                        continue
+                    var_data = block.get("variables_data", {}).get(v_name)
+                    if var_data is None:
+                        results_log.append({"block": block.get("name", b_id), "var": v_name, "success": 0, "errors": 1})
+                        progress_bar.progress((i + 1) / len(selected))
+                        continue
+                    if block.get("block_type") == "characteristic":
+                        res = batch_generate_for_characteristic(b_id, v_name, var_data, block)
+                    else:
+                        res = batch_generate_for_other(b_id, v_name, var_data, block)
+                    results_log.append({
+                        "block": block.get("name", b_id),
+                        "var": v_name,
+                        "success": res.get("success", 0),
+                        "errors": res.get("errors", 0)
+                    })
+                    progress_bar.progress((i + 1) / len(selected))
+                progress_bar.empty()
+                status_text.empty()
+                total_success = sum(r["success"] for r in results_log)
+                total_errors = sum(r["errors"] for r in results_log)
+                st.success(f"✅ Массовая генерация завершена. Успешно: {total_success}, ошибок: {total_errors}")
+                with st.expander("Подробности"):
+                    for log in results_log:
+                        st.write(f"**{log['block']} / {log['var']}**: успех {log['success']}, ошибок {log['errors']}")
+                st.rerun()
+
+    # --- Индивидуальная генерация ---
+    if "ai_overview_selected" in st.session_state:
+        block_id, var_name = st.session_state.ai_overview_selected
+        block = st.session_state.block_manager.get_block(block_id)
+        if block is None or var_name not in block.get("variables_data", {}):
+            st.error("Данные устарели, вернитесь к списку")
+            del st.session_state.ai_overview_selected
+            st.rerun()
+        var_data = block["variables_data"][var_name]
+        st.markdown("---")
+        st.markdown(f"### Генерация для `{var_name}` (блок: **{block.get('name')}**)")
+        if block.get("block_type") == "characteristic":
+            show_ai_generation_for_characteristics(block_id, var_name, var_data, block)
+        else:
+            show_ai_generation_for_other_blocks(block_id, var_name, var_data, block)
+        if st.button("← Назад к списку AI-переменных", key="back_to_ai_list"):
+            del st.session_state.ai_overview_selected
+            st.rerun()
+
+    if "ai_view_selected" in st.session_state:
+        block_id, var_name = st.session_state.ai_view_selected
+        block = st.session_state.block_manager.get_block(block_id)
+        if block is None or var_name not in block.get("variables_data", {}):
+            st.error("Данные устарели, вернитесь к списку")
+            del st.session_state.ai_view_selected
+            st.rerun()
+        st.markdown("---")
+        st.markdown(f"### 📋 Все инструкции для `{var_name}` (блок: **{block.get('name')}**)")
+        show_ai_instructions_full(block_id, var_name, block)
+        if st.button("← Назад к списку AI-переменных"):
+            del st.session_state.ai_view_selected
+            st.rerun()
 def show_edit_mode():
     """Режим редактирования блоков и переменных"""
 
     # Создаем табы
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📋 Управление блоками",
         "📝 Редактирование блока",
         "🔧 Редактирование статических переменных",
-        "🌀 Редактирование динамических переменных"
+        "🌀 Редактирование динамических переменных",
+        "🤖 Управление AI‑переменными"
     ])
 
     with tab1:
@@ -745,6 +920,8 @@ def show_edit_mode():
 
     with tab4:
         show_dynamic_variables_editor()
+    with tab5:
+        show_ai_variables_overview()
 
 
 def show_dynamic_variables_editor():
@@ -1753,14 +1930,7 @@ def show_ai_generation_for_other_blocks(block_id, var_name, var_data, block):
     """Показывает интерфейс генерации AI для других типов блоков с отображением промпта и ответа"""
 
     st.info("""
-    **Генерация для общих блоков**
-
-    Этот тип блоков используется для создания:
-    - Введений и заключений
-    - Общих описаний категорий
-    - Маркетинговых текстов
-    - SEO-оптимизированного контента
-    """)
+    **Генерация для общих блоков**    """)
 
     # Проверяем наличие данных из фазы 2
     phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
@@ -2461,6 +2631,261 @@ def save_data_to_app_state():
             }
             return True
     return False
+# ===== Новые функции для массовой генерации AI =====
+# ===== Новые функции для массовой генерации AI =====
+def batch_generate_for_characteristic(block_id, var_name, var_data, block):
+    """
+    Генерирует AI-инструкции для characteristic-блока без UI.
+    Возвращает словарь со статистикой: {'success': int, 'errors': int}
+    """
+    # Получаем данные из фазы 2
+    phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
+    category = phase2_data.get('category', '')
+    characteristics = st.session_state.get('loaded_data', {}).get('characteristics', [])
+
+    if not category or not characteristics:
+        return {"success": 0, "errors": 0, "error": "Нет данных категории или характеристик"}
+
+    provider = var_data.get("ai_provider", "openai")
+    prompt_template = var_data.get("ai_prompt", "")
+    num_variants = var_data.get("ai_num_variants", 1)
+
+    success_count = 0
+    error_count = 0
+
+    for char in characteristics:
+        char_id = char.get('char_id')
+        char_name = char.get('char_name')
+        is_unique = char.get('is_unique', False)
+        values = char.get('values', [])
+
+        if is_unique:
+            for value_item in values:
+                value = value_item.get('value', '')
+                context = {
+                    "категория": category,
+                    "характеристика": char_name,
+                    "значение": value,
+                    "тип": "unique",
+                    "block_id": block_id,
+                    "var_name": var_name
+                }
+                try:
+                    gen_results = st.session_state.ai_generator.generate_instruction(
+                        prompt_template, context, provider=provider, num_variants=1
+                    )
+                    if gen_results and gen_results[0].get("success"):
+                        instruction = gen_results[0]["text"]
+                        st.session_state.ai_instruction_manager.save_instruction(
+                            block_id, var_name, [instruction], context,
+                            {"provider": provider, "char_id": char_id, "char_name": char_name, "value": value}
+                        )
+                        success_count += 1
+                    else:
+                        error_count += 1
+                except Exception:
+                    error_count += 1
+        else:
+            context = {
+                "категория": category,
+                "характеристика": char_name,
+                "тип": "regular",
+                "block_id": block_id,
+                "var_name": var_name
+            }
+            try:
+                gen_results = st.session_state.ai_generator.generate_instruction(
+                    prompt_template, context, provider=provider, num_variants=num_variants
+                )
+                successful = [r["text"] for r in gen_results if r.get("success")]
+                if successful:
+                    st.session_state.ai_instruction_manager.save_instruction(
+                        block_id, var_name, successful, context,
+                        {"provider": provider, "char_id": char_id, "char_name": char_name}
+                    )
+                    success_count += len(successful)
+                error_count += sum(1 for r in gen_results if not r.get("success"))
+            except Exception:
+                error_count += num_variants
+
+    return {"success": success_count, "errors": error_count}
+
+
+def batch_generate_for_other(block_id, var_name, var_data, block):
+    """
+    Генерирует AI-инструкции для other-блока без UI.
+    Возвращает статистику.
+    """
+    phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
+    category = phase2_data.get('category', '')
+
+    if not category:
+        return {"success": 0, "errors": 0, "error": "Нет категории"}
+
+    provider = var_data.get("ai_provider", "openai")
+    prompt_template = var_data.get("ai_prompt", "")
+    num_variants = var_data.get("ai_num_variants", 3)
+
+    context = {
+        "категория": category,
+        "тип": "other",
+        "block_id": block_id,
+        "var_name": var_name
+    }
+
+    try:
+        gen_results = st.session_state.ai_generator.generate_instruction(
+            prompt_template, context, provider=provider, num_variants=num_variants
+        )
+        successful = [r["text"] for r in gen_results if r.get("success")]
+        if successful:
+            st.session_state.ai_instruction_manager.save_instruction(
+                block_id, var_name, successful, context,
+                {"provider": provider, "block_type": "other", "num_variants": num_variants}
+            )
+        return {"success": len(successful), "errors": num_variants - len(successful)}
+    except Exception as e:
+        return {"success": 0, "errors": num_variants, "error": str(e)}
+
+
+def has_ai_values(block_id, var_name):
+    """
+    Возвращает True, если для данной переменной существуют инструкции,
+    сгенерированные для текущей категории (из фазы 2).
+    """
+    # Текущая категория
+    phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
+    current_category = phase2_data.get('category', '')
+
+    if not current_category:
+        return False
+
+    # Получаем менеджер инструкций
+    ai_mgr = st.session_state.get('ai_instruction_manager')
+    if not ai_mgr:
+        return False
+
+    # Проверяем наличие данных для блока и переменной
+    if block_id not in ai_mgr.instructions:
+        return False
+    if var_name not in ai_mgr.instructions[block_id]:
+        return False
+
+    # Перебираем все сохранённые контексты для этой переменной
+    for context_hash, data in ai_mgr.instructions[block_id][var_name].items():
+        context = data.get("context", {})
+        # Проверяем, что категория совпадает и есть значения
+        if context.get("категория") == current_category:
+            if data.get("values"):
+                return True
+
+    return False
+
+def show_ai_instructions_full(block_id, var_name, block):
+    """Отображает все сгенерированные инструкции для AI-переменной с возможностью редактирования"""
+    if 'ai_instruction_manager' not in st.session_state:
+        st.error("Менеджер AI не инициализирован")
+        return
+
+    # Получаем текущую категорию из данных фазы 2
+    phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
+    current_category = phase2_data.get('category', '')
+
+    if not current_category:
+        st.warning("⚠️ Категория не загружена. Невозможно отфильтровать инструкции. Загрузите данные в фазе 2.")
+        return
+
+    ai_mgr = st.session_state.ai_instruction_manager
+
+    if block_id not in ai_mgr.instructions or var_name not in ai_mgr.instructions[block_id]:
+        st.info("Нет сохранённых инструкций для этой переменной.")
+        return
+
+    instructions_dict = ai_mgr.instructions[block_id][var_name]
+
+    # Фильтруем только те контексты, у которых категория совпадает с текущей
+    filtered_items = []
+    for context_hash, data in instructions_dict.items():
+        context = data.get("context", {})
+        if context.get("категория") == current_category:
+            filtered_items.append((context_hash, data))
+
+    if not filtered_items:
+        st.info(f"Нет инструкций для текущей категории «{current_category}».")
+        return
+
+    # Отображаем отфильтрованные инструкции с возможностью редактирования
+    for context_hash, data in filtered_items:
+        context = data.get("context", {})
+        values = data.get("values", [])
+        original_values = data.get("original_values", [])
+        metadata = data.get("metadata", {})
+
+        # Заголовок в зависимости от типа
+        context_type = context.get("тип", "unknown")
+        characteristic = context.get("характеристика", "")
+        value = context.get("значение", "")
+
+        if context_type == "regular":
+            title = f"**Regular**: {characteristic}"
+        elif context_type == "unique":
+            title = f"**Unique**: {characteristic} = {value}"
+        elif context_type == "other":
+            title = f"**Other**: блок {block.get('name', block_id)}"
+        else:
+            title = f"**Контекст**: {current_category} / {characteristic}"
+
+        with st.expander(title, expanded=False):
+            st.markdown("**Контекст генерации:**")
+            st.json(context)
+
+            if metadata:
+                st.markdown("**Метаданные:**")
+                st.json(metadata)
+
+            # Редактирование инструкций
+            st.markdown("**Редактирование инструкций:**")
+
+            # Если есть оригинальные значения (полные ответы) – редактируем их
+            if original_values:
+                for idx, orig in enumerate(original_values):
+                    col_edit1, col_edit2 = st.columns([5, 1])
+                    with col_edit1:
+                        new_value = st.text_area(
+                            f"Вариант {idx+1}:",
+                            value=orig,
+                            height=150,
+                            key=f"edit_full_{block_id}_{var_name}_{context_hash}_{idx}"
+                        )
+                    with col_edit2:
+                        if st.button("💾", key=f"save_full_{block_id}_{var_name}_{context_hash}_{idx}"):
+                            # Обновляем полное значение и переразбиваем на пункты
+                            if ai_mgr.update_full_instruction(block_id, var_name, context_hash, idx, new_value):
+                                st.success("✅ Сохранено!")
+                                st.rerun()
+            else:
+                # Если нет оригинальных, редактируем разбитые пункты
+                for idx, val in enumerate(values):
+                    col_edit1, col_edit2 = st.columns([5, 1])
+                    with col_edit1:
+                        new_val = st.text_area(
+                            f"Пункт {idx+1}:",
+                            value=val,
+                            height=100,
+                            key=f"edit_split_{block_id}_{var_name}_{context_hash}_{idx}"
+                        )
+                    with col_edit2:
+                        if st.button("💾", key=f"save_split_{block_id}_{var_name}_{context_hash}_{idx}"):
+                            if ai_mgr.update_instruction_value(block_id, var_name, context_hash, idx, new_val):
+                                st.success("✅ Сохранено!")
+                                st.rerun()
+
+            # Кнопка удаления всех инструкций для этого контекста
+            if st.button("🗑️ Удалить все инструкции для этого контекста",
+                         key=f"delete_ctx_{block_id}_{var_name}_{context_hash}"):
+                if ai_mgr.delete_instruction(block_id, var_name, context_hash):
+                    st.success("✅ Инструкции удалены!")
+                    st.rerun()
 
 
 if __name__ == "__main__":
