@@ -942,7 +942,8 @@ def main():
 
 def show_generation_mode(phase1_data, category, markers):
     """Основной режим - генерация промптов"""
-
+    if 'selected_regular_block_id' not in st.session_state:
+        st.session_state.selected_regular_block_id = None
     characteristics = phase1_data.get('characteristics', [])
 
     if not characteristics:
@@ -1319,8 +1320,19 @@ def show_generation_mode(phase1_data, category, markers):
         st.success(f"✅ Доступно других блоков: {len(other_blocks)}")
 
     # Выбор блока для regular характеристик
+    # Выбор блока для regular характеристик
     if regular_blocks:
         regular_block_ids = list(regular_blocks.keys())
+
+        # Инициализация в session_state, если нет
+        if 'selected_regular_block_id' not in st.session_state:
+            # По умолчанию выбираем первый блок
+            st.session_state.selected_regular_block_id = regular_block_ids[0]
+
+        # Проверяем, что сохраненный ID все еще существует
+        if st.session_state.selected_regular_block_id not in regular_block_ids:
+            st.session_state.selected_regular_block_id = regular_block_ids[0]
+
         selected_regular_block_id = st.selectbox(
             "Выберите шаблон для Regular характеристик:",
             regular_block_ids,
@@ -1328,19 +1340,40 @@ def show_generation_mode(phase1_data, category, markers):
             key="regular_block_selector"
         )
 
+        # Сохраняем выбор
+        if selected_regular_block_id != st.session_state.selected_regular_block_id:
+            st.session_state.selected_regular_block_id = selected_regular_block_id
+            st.rerun()
+    else:
+        selected_regular_block_id = None
+
     # Выбор блока для unique характеристик
     if unique_blocks:
         unique_block_ids = list(unique_blocks.keys())
+
+        # Инициализация в session_state, если нет
+        if 'selected_unique_block_id' not in st.session_state:
+            st.session_state.selected_unique_block_id = unique_block_ids[0]
+
+        # Проверяем, что сохраненный ID все еще существует
+        if st.session_state.selected_unique_block_id not in unique_block_ids:
+            st.session_state.selected_unique_block_id = unique_block_ids[0]
+
         selected_unique_block_id = st.selectbox(
             "Выберите шаблон для Unique характеристик:",
             unique_block_ids,
             format_func=lambda x: unique_blocks[x].get("name", x),
             key="unique_block_selector"
         )
-    elif regular_blocks:
-        # Если нет unique блоков, используем regular для unique тоже
-        selected_unique_block_id = selected_regular_block_id
-        st.warning("⚠️ Не найден шаблон для unique характеристик. Будет использован шаблон для regular.")
+
+        # Сохраняем выбор
+        if selected_unique_block_id != st.session_state.selected_unique_block_id:
+            st.session_state.selected_unique_block_id = selected_unique_block_id
+            st.rerun()
+    else:
+        selected_unique_block_id = selected_regular_block_id if regular_blocks else None
+        if selected_unique_block_id:
+            st.warning("⚠️ Не найден шаблон для unique характеристик. Будет использован шаблон для regular.")
 
     # Генерация промптов
     st.subheader("3. Генерация промптов")
@@ -1391,9 +1424,9 @@ def show_generation_mode(phase1_data, category, markers):
 
                 # Выбираем соответствующий блок
                 if char_type == "unique" and unique_blocks:
-                    selected_block_id = selected_unique_block_id
+                    selected_block_id = st.session_state.selected_unique_block_id
                 else:
-                    selected_block_id = selected_regular_block_id
+                    selected_block_id = st.session_state.selected_regular_block_id
 
                 # Получаем настройки для этой характеристики
                 char_settings = st.session_state.phase4_char_settings.get(char_id, {})
@@ -1599,8 +1632,8 @@ def show_generation_mode(phase1_data, category, markers):
                 st.session_state.phase4_settings = {
                     'char_settings': st.session_state.phase4_char_settings,
                     'other_blocks_settings': st.session_state.phase4_other_blocks_settings,
-                    'selected_regular_block_id': selected_regular_block_id,
-                    'selected_unique_block_id': selected_unique_block_id,
+                    'selected_regular_block_id': st.session_state.selected_regular_block_id,
+                    'selected_unique_block_id': st.session_state.selected_unique_block_id,
                     'global_prompts': st.session_state.phase4_global_prompts
                 }
                 st.success("✅ Настройки сохранены!")

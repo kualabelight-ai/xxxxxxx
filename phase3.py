@@ -898,13 +898,10 @@ def show_ai_variables_overview():
             del st.session_state.ai_view_selected
             st.rerun()
 def show_edit_mode():
-    """Режим редактирования блоков и переменных"""
-
-    # Создаем табы
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📋 Управление блоками",
-        "📝 Редактирование блока",
-        "🔧 Редактирование статических переменных",
+        "✏️ Редактирование блока",
+        "📊 Обзор переменных",          # было "🔧 Редактирование статических переменных"
         "🌀 Редактирование динамических переменных",
         "🤖 Управление AI‑переменными"
     ])
@@ -916,7 +913,7 @@ def show_edit_mode():
         show_block_editor()
 
     with tab3:
-        show_variables_editor()
+        show_variables_overview()
 
     with tab4:
         show_dynamic_variables_editor()
@@ -1122,7 +1119,78 @@ def show_dynamic_variables_editor():
                 st.success("✅ Загружены стандартные динамические переменные")
                 st.rerun()
 
+def show_variables_overview():
+    """Отображает все переменные (статические и AI) с привязкой к блокам"""
+    st.subheader("📊 Обзор всех переменных")
 
+    blocks = st.session_state.block_manager.get_all_blocks()
+    if not blocks:
+        st.info("Нет созданных блоков")
+        return
+
+    # Собираем переменные
+    all_vars = []
+    for block_id, block in blocks.items():
+        block_name = block.get("name", block_id)
+        variables_data = block.get("variables_data", {})
+        for var_name, var_data in variables_data.items():
+            var_type = var_data.get("type", "static")
+            if var_type in ["static", "ai"]:
+                all_vars.append({
+                    "block_id": block_id,
+                    "block_name": block_name,
+                    "var_name": var_name,
+                    "type": var_type,
+                    "values_count": len(var_data.get("values", [])),
+                    "description": var_data.get("description", "")
+                })
+
+    if not all_vars:
+        st.info("Нет статических или AI-переменных")
+        return
+
+    # Фильтры
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        type_filter = st.multiselect(
+            "Тип переменной",
+            options=["static", "ai"],
+            default=["static", "ai"],
+            format_func=lambda x: "Статическая" if x == "static" else "AI"
+        )
+    with col_f2:
+        blocks_list = sorted(set(v["block_name"] for v in all_vars))
+        block_filter = st.multiselect("Блок", options=blocks_list, default=[])
+
+    filtered = [v for v in all_vars if v["type"] in type_filter]
+    if block_filter:
+        filtered = [v for v in filtered if v["block_name"] in block_filter]
+
+    if filtered:
+        st.markdown(f"**Найдено переменных: {len(filtered)}**")
+
+        # Заголовки таблицы
+        cols = st.columns([2, 2, 1, 1, 2, 2])
+        cols[0].write("**Переменная**")
+        cols[1].write("**Блок**")
+        cols[2].write("**Тип**")
+        cols[3].write("**Кол-во значений**")
+        cols[4].write("**Описание**")
+        cols[5].write("**Действия**")
+
+        for var in filtered:
+            row = st.columns([2, 2, 1, 1, 2, 2])
+            row[0].write(f"`{var['var_name']}`")
+            row[1].write(var['block_name'])
+            row[2].write("📝" if var['type'] == "static" else "🤖")
+            row[3].write(str(var['values_count']))
+            row[4].caption(var['description'][:50] + ("..." if len(var['description']) > 50 else ""))
+            with row[5]:
+                if st.button("✏️", key=f"goto_{var['block_id']}_{var['var_name']}", help="Перейти к блоку"):
+                    st.session_state.current_edit_block = var['block_id']
+                    st.rerun()
+    else:
+        st.info("Нет переменных, соответствующих фильтрам")
 def show_blocks_management():
     """Управление блоками: список, создание, удаление"""
     st.subheader("📋 Управление блоками")
@@ -1549,52 +1617,295 @@ def show_block_editor():
         with col_save2:
             if st.form_submit_button("❌ Отмена", type="secondary", use_container_width=True):
                 st.rerun()
+    # После формы редактирования блока добавляем управление статическими переменными
+    st.markdown("---")
+    st.subheader("📦 Переменные этого блока")
 
-    # Предпросмотр
-    with st.expander("👁️ Предпросмотр шаблона", expanded=False):
-        # Находим все переменные в шаблоне
-        template_vars = re.findall(r'\{([^}]+)\}', template)
+    # Получаем текущие переменные блока
+    variables = selected_block.get("variables", [])
+    variables_data = selected_block.get("variables_data", {})
+    template = selected_block.get("template", "")
 
-        if block_type == "characteristic":
-            dynamic_vars = ["значение_форматированное", "контекст_категория", "название_характеристики",
-                            "характеристика_маркер"]
+    # Определяем динамические переменные, доступные в системе
+    dynamic_var_names = []
+    if 'dynamic_var_manager' in st.session_state:
+        dynamic_var_names = list(st.session_state.dynamic_var_manager.get_all_dynamic_vars().keys())
+
+    # Разделяем переменные по типам
+    static_vars = []
+    ai_vars = []
+    dynamic_vars = []
+
+    for var_name in variables:
+        var_type = variables_data.get(var_name, {}).get("type", "static")
+        if var_type == "ai":
+            ai_vars.append(var_name)
+        elif var_name in dynamic_var_names:
+            dynamic_vars.append(var_name)
         else:
-            dynamic_vars = ["контекст_категория", "маркер"]
+            static_vars.append(var_name)
 
-        col_vars1, col_vars2 = st.columns(2)
+    # Добавляем переменные, которые есть только в шаблоне, но не в списке variables
+    template_vars = set(re.findall(r'\{([^}]+)\}', template))
+    for var_name in template_vars:
+        if var_name not in variables:
+            # Автоматически добавляем в список, но не создаём данные
+            if var_name not in variables:
+                variables.append(var_name)
+                # Определяем предполагаемый тип
+                if var_name in dynamic_var_names:
+                    dynamic_vars.append(var_name)
+                else:
+                    # По умолчанию считаем статической, но данные не создаём
+                    static_vars.append(var_name)
+                    # Можно создать пустую запись, но лучше оставить на усмотрение пользователя
+                    # Для простоты пока не создаём
+                    pass
 
-        with col_vars1:
-            st.markdown("**Статические переменные:**")
-            for var in set(template_vars):
-                if var not in dynamic_vars:
-                    st.markdown(f'<div class="variable-chip static">{{{var}}}</div>', unsafe_allow_html=True)
+    # Создаём табы для разных типов переменных
+    tab_static, tab_ai, tab_dynamic = st.tabs([
+        f"📝 Статические ({len(static_vars)})",
+        f"🤖 AI ({len(ai_vars)})",
+        f"🌀 Динамические ({len(dynamic_vars)})"
+    ])
 
-        with col_vars2:
-            st.markdown("**Динамические переменные:**")
+    # --- Вкладка статических переменных ---
+    with tab_static:
+        # Кнопка добавления новой статической переменной
+        with st.expander("➕ Добавить новую статическую переменную", expanded=False):
+            new_static_name = st.text_input(
+                "Имя переменной (без фигурных скобок)",
+                key=f"new_static_{selected_block_id}"
+            )
+            col_new1, col_new2 = st.columns([3, 1])
+            with col_new1:
+                if st.button("Создать статическую", key=f"create_static_{selected_block_id}") and new_static_name:
+                    if new_static_name not in variables:
+                        variables.append(new_static_name)
+                        variables_data[new_static_name] = {
+                            "name": new_static_name,
+                            "description": f"Статическая переменная {new_static_name}",
+                            "type": "static",
+                            "values": ["Пример значения 1", "Пример значения 2"]
+                        }
+                        selected_block["variables"] = variables
+                        selected_block["variables_data"] = variables_data
+                        if st.session_state.block_manager.save_block(selected_block, variables_data):
+                            st.success(f"Переменная '{new_static_name}' создана")
+                            st.rerun()
+                    else:
+                        st.error("Переменная с таким именем уже существует")
 
-            # Получаем список динамических переменных
-            if 'dynamic_var_manager' in st.session_state:
-                dynamic_vars_all = st.session_state.dynamic_var_manager.get_all_dynamic_vars()
-                dynamic_var_names = list(dynamic_vars_all.keys())
-            else:
-                dynamic_var_names = ["стоп", "контекст_категория", "значение_форматированное",
-                                     "название_характеристики", "характеристика_маркер", "маркер"]
+        # Список статических переменных для редактирования
+        if static_vars:
+            for var_name in static_vars:
+                var_data = variables_data.get(var_name, {
+                    "name": var_name,
+                    "description": f"Статическая переменная {var_name}",
+                    "type": "static",
+                    "values": []
+                })
+                with st.expander(f"📝 {var_name}", expanded=False):
+                    with st.form(key=f"edit_static_{selected_block_id}_{var_name}"):
+                        desc = st.text_input("Описание", value=var_data.get("description", ""))
+                        values_text = "\n".join(var_data.get("values", []))
+                        new_values = st.text_area("Значения (каждое с новой строки)", value=values_text, height=150)
 
-            # Показываем только те, что есть в шаблоне
-            template_vars = re.findall(r'\{([^}]+)\}', template)
-            for var in template_vars:
-                if var in dynamic_var_names:
-                    source_icon = {
-                        "config": "⚙️",
-                        "data": "📊",
-                        "processing": "🔄"
-                    }.get(
-                        dynamic_vars_all.get(var, {}).get("source", "unknown"),
-                        "❓"
-                    )
-                    st.markdown(
-                        f'<div class="variable-chip dynamic" title="Динамическая переменная - {source_icon}">{{{var}}}</div>',
-                        unsafe_allow_html=True)
+                        col_act1, col_act2, col_act3 = st.columns([2, 1, 1])
+                        with col_act1:
+                            if st.form_submit_button("💾 Сохранить"):
+                                var_data["description"] = desc
+                                var_data["values"] = [v.strip() for v in new_values.split("\n") if v.strip()]
+                                variables_data[var_name] = var_data
+                                selected_block["variables_data"] = variables_data
+                                if st.session_state.block_manager.save_block(selected_block, variables_data):
+                                    st.success(f"Переменная '{var_name}' сохранена")
+                                    st.rerun()
+                        with col_act2:
+                            if st.form_submit_button("🗑️ Удалить"):
+                                if st.session_state.get(f"confirm_del_static_{selected_block_id}_{var_name}", False):
+                                    variables.remove(var_name)
+                                    del variables_data[var_name]
+                                    selected_block["variables"] = variables
+                                    selected_block["variables_data"] = variables_data
+                                    if st.session_state.block_manager.save_block(selected_block, variables_data):
+                                        st.success(f"Переменная '{var_name}' удалена")
+                                        st.rerun()
+                                else:
+                                    st.session_state[f"confirm_del_static_{selected_block_id}_{var_name}"] = True
+                                    st.warning("Нажмите 'Удалить' ещё раз для подтверждения")
+                        with col_act3:
+                            # Кнопка преобразования в AI
+                            if st.form_submit_button("🤖 Преобразовать в AI"):
+                                var_data["type"] = "ai"
+                                var_data["ai_prompt"] = "Сгенерируй текст для {характеристика}..."
+                                var_data["ai_num_variants"] = 3
+                                var_data["ai_provider"] = "openai"
+                                variables_data[var_name] = var_data
+                                selected_block["variables_data"] = variables_data
+                                if st.session_state.block_manager.save_block(selected_block, variables_data):
+                                    st.success(f"Переменная '{var_name}' теперь AI")
+                                    st.rerun()
+        else:
+            st.info("Нет статических переменных")
+
+    # --- Вкладка AI переменных ---
+    with tab_ai:
+        # Кнопка добавления новой AI переменной
+        with st.expander("➕ Добавить новую AI переменную", expanded=False):
+            new_ai_name = st.text_input(
+                "Имя переменной (без фигурных скобок)",
+                key=f"new_ai_{selected_block_id}"
+            )
+            if st.button("Создать AI", key=f"create_ai_{selected_block_id}") and new_ai_name:
+                if new_ai_name not in variables:
+                    variables.append(new_ai_name)
+                    # Базовый промпт в зависимости от типа блока
+                    if block_type == "characteristic":
+                        base_prompt = """Сгенерируй перечень аналитических тезисов для характеристики {характеристика} в категории {категория}."""
+                    else:
+                        base_prompt = "Сгенерируй контент для категории {контекст_категория}."
+                    variables_data[new_ai_name] = {
+                        "name": new_ai_name,
+                        "description": f"AI переменная {new_ai_name}",
+                        "type": "ai",
+                        "ai_prompt": base_prompt,
+                        "ai_num_variants": 3,
+                        "ai_provider": "openai",
+                        "values": []
+                    }
+                    selected_block["variables"] = variables
+                    selected_block["variables_data"] = variables_data
+                    if st.session_state.block_manager.save_block(selected_block, variables_data):
+                        st.success(f"AI переменная '{new_ai_name}' создана")
+                        st.rerun()
+                else:
+                    st.error("Переменная с таким именем уже существует")
+
+        # Список AI переменных для редактирования
+        if ai_vars:
+            for var_name in ai_vars:
+                var_data = variables_data.get(var_name, {
+                    "name": var_name,
+                    "description": f"AI переменная {var_name}",
+                    "type": "ai",
+                    "ai_prompt": "",
+                    "ai_num_variants": 3,
+                    "ai_provider": "openai",
+                    "values": []
+                })
+                with st.expander(f"🤖 {var_name}", expanded=False):
+                    with st.form(key=f"edit_ai_{selected_block_id}_{var_name}"):
+                        desc = st.text_input("Описание", value=var_data.get("description", ""))
+                        provider = st.selectbox(
+                            "Провайдер",
+                            ["openai", "deepseek"],
+                            index=0 if var_data.get("ai_provider", "openai") == "openai" else 1
+                        )
+                        num_variants = st.number_input(
+                            "Количество вариантов",
+                            min_value=1, max_value=10,
+                            value=var_data.get("ai_num_variants", 3)
+                        )
+                        prompt = st.text_area(
+                            "Промпт для AI",
+                            value=var_data.get("ai_prompt", ""),
+                            height=150
+                        )
+
+                        col_act1, col_act2, col_act3 = st.columns([2, 1, 1])
+                        with col_act1:
+                            if st.form_submit_button("💾 Сохранить настройки"):
+                                var_data.update({
+                                    "description": desc,
+                                    "ai_provider": provider,
+                                    "ai_num_variants": num_variants,
+                                    "ai_prompt": prompt
+                                })
+                                variables_data[var_name] = var_data
+                                selected_block["variables_data"] = variables_data
+                                if st.session_state.block_manager.save_block(selected_block, variables_data):
+                                    st.success(f"AI переменная '{var_name}' сохранена")
+                                    st.rerun()
+                        with col_act2:
+                            if st.form_submit_button("🚀 Генерировать"):
+                                # Сохраняем и переходим к генерации
+                                var_data.update({
+                                    "description": desc,
+                                    "ai_provider": provider,
+                                    "ai_num_variants": num_variants,
+                                    "ai_prompt": prompt
+                                })
+                                variables_data[var_name] = var_data
+                                selected_block["variables_data"] = variables_data
+                                st.session_state.block_manager.save_block(selected_block, variables_data)
+                                st.session_state.current_ai_var_for_generation = var_name
+                                st.session_state.current_block_for_ai = selected_block_id
+                                st.rerun()
+                        with col_act3:
+                            if st.form_submit_button("🗑️ Удалить"):
+                                if st.session_state.get(f"confirm_del_ai_{selected_block_id}_{var_name}", False):
+                                    variables.remove(var_name)
+                                    del variables_data[var_name]
+                                    selected_block["variables"] = variables
+                                    selected_block["variables_data"] = variables_data
+                                    if st.session_state.block_manager.save_block(selected_block, variables_data):
+                                        st.success(f"AI переменная '{var_name}' удалена")
+                                        st.rerun()
+                                else:
+                                    st.session_state[f"confirm_del_ai_{selected_block_id}_{var_name}"] = True
+                                    st.warning("Нажмите 'Удалить' ещё раз для подтверждения")
+
+                    # Если выбрана генерация для этой переменной
+                    if (st.session_state.get("current_ai_var_for_generation") == var_name and
+                            st.session_state.get("current_block_for_ai") == selected_block_id):
+                        st.markdown("---")
+                        if block_type == "characteristic":
+                            show_ai_generation_for_characteristics(selected_block_id, var_name, var_data,
+                                                                   selected_block)
+                        else:
+                            show_ai_generation_for_other_blocks(selected_block_id, var_name, var_data, selected_block)
+                        if st.button("❌ Отменить генерацию", key=f"cancel_gen_ai_{var_name}"):
+                            del st.session_state.current_ai_var_for_generation
+                            del st.session_state.current_block_for_ai
+                            st.rerun()
+        else:
+            st.info("Нет AI переменных")
+
+    # --- Вкладка динамических переменных ---
+    with tab_dynamic:
+        if dynamic_vars:
+            st.info("Динамические переменные настраиваются во вкладке «🌀 Редактирование динамических переменных».")
+            for var_name in dynamic_vars:
+                var_info = st.session_state.dynamic_var_manager.get_dynamic_variable(var_name)
+                with st.expander(f"🌀 {var_name}", expanded=False):
+                    if var_info:
+                        st.write(f"**Описание:** {var_info.get('description', '')}")
+                        st.write(f"**Источник:** {var_info.get('source', 'unknown')}")
+                        if var_info.get('source') == 'config':
+                            values = var_info.get('values', [])
+                            st.write(f"**Количество значений:** {len(values)}")
+                            if values:
+                                st.write("**Примеры:**")
+                                for val in values[:3]:
+                                    st.write(f"- {val}")
+                    else:
+                        st.write("Информация о переменной не найдена")
+        else:
+            st.info(
+                "Динамические переменные не используются в этом блоке. Чтобы добавить, используйте `{имя}` в шаблоне и создайте переменную во вкладке «🌀 Редактирование динамических переменных».")
+
+    # Информация о переменных блока
+    with st.expander("📊 Статистика по переменным", expanded=False):
+        col_stat1, col_stat2, col_stat3 = st.columns(3)
+        with col_stat1:
+            st.metric("Всего переменных", len(variables))
+        with col_stat2:
+            st.metric("Статических", len(static_vars))
+        with col_stat3:
+            st.metric("AI", len(ai_vars))
+        if dynamic_vars:
+            st.metric("Динамических", len(dynamic_vars))
 
 
 # Заменить функцию show_ai_generation_for_characteristics на новую версию:
