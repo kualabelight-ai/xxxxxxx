@@ -17,7 +17,7 @@ class AIManager:
 
     def __init__(self):
         self.config_file = "config/ai_config.json"
-        self.generations_file = "data/ai_generations.json"
+        self.generations_file = "pages/data/ai_generations.json"
         self.config = self._load_config()
         self.generations = self._load_generations()
         self.clients = {}

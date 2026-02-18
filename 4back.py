@@ -4,8 +4,8 @@ import json
 import random
 import re
 import streamlit as st
-from phase3 import BlockManager, VariableManager, DynamicVariableManager, DynamicVariableProcessor, local_css
-from ai_module import AIConfigManager, AIGenerator, AIInstructionManager
+from phase3 import BlockManager, VariableManager, DynamicVariableManager, local_css
+from ai_module import AIInstructionManager
 
 
 class DataLoader:

@@ -3,7 +3,7 @@ import json
 import os
 from collections import defaultdict
 from datetime import datetime
-
+from styles import load_css
 
 # --- CSS ---
 # --- CSS ---
@@ -530,7 +530,7 @@ def update_global_top_n():
 # --- Приложение ---
 def main():
     st.set_page_config(page_title="Data Harvester Phase 1", layout="wide")
-    local_css()
+    load_css()
     st.title("📦 Сбор и фильтрация характеристик (Фаза 1)")
 
     # --- Инициализация session_state ---
@@ -551,56 +551,72 @@ def main():
             st.session_state[key] = value
 
     # --- Sidebar ---
-    with st.sidebar:
-        st.header("Настройки")
+    # --- Замена сайдбара: все элементы перенесены в основное окно ---
 
-        # Черный список
+    # 1. Загрузка файла (не растягиваем — помещаем в центральную колонку)
+    col_file1, col_file2, col_file3 = st.columns([1, 2, 1])
+    with col_file2:
+        uploaded_file = st.file_uploader(
+            "Загрузите JSON файл категории",
+            type="json",
+            label_visibility="collapsed"  # скрываем метку, оставляем только поле
+        )
+
+    # 2. Если файл загружен — обрабатываем (логика из sidebar)
+    if uploaded_file:
+        # Проверяем, нужно ли переобрабатывать (новый файл или первый запуск)
+        if (st.session_state.uploaded_filename != uploaded_file.name or
+                st.session_state.processed_chars is None):
+            raw_data = load_data(uploaded_file)
+            if raw_data:
+                st.session_state.raw_data = raw_data
+                st.session_state.processed_chars, st.session_state.duplicate_names = process_characteristics(
+                    raw_data, st.session_state.black_list
+                )
+                st.session_state.uploaded_filename = uploaded_file.name
+
+                # Устанавливаем имя категории по умолчанию (если ещё не задано)
+                filename = uploaded_file.name
+                base_name = os.path.splitext(filename)[0]
+                if not st.session_state.category_name:
+                    st.session_state.category_name = base_name
+
+    # 3. Два блока настроек в две колонки (чтобы не растягивались)
+    col_left, col_right = st.columns(2, gap="large")
+
+    with col_left:
         with st.expander("🚫 Редактировать черный список"):
             st.text_area(
                 "Список ID или имен (через запятую)",
                 value=", ".join(st.session_state.black_list),
                 key="black_list_textarea",
-                on_change=update_black_list
+                on_change=update_black_list,
+                height=150
             )
 
-        # Загрузка файла
-        uploaded_file = st.file_uploader("Загрузите JSON файл категории", type="json")
-
-        if uploaded_file:
-            # Обработка файла
-            if (st.session_state.uploaded_filename != uploaded_file.name or
-                    st.session_state.processed_chars is None):
-
-                raw_data = load_data(uploaded_file)
-                if raw_data:
-                    st.session_state.raw_data = raw_data
-                    st.session_state.processed_chars, st.session_state.duplicate_names = process_characteristics(
-                        raw_data, st.session_state.black_list
-                    )
-                    st.session_state.uploaded_filename = uploaded_file.name
-
-                    # Установка названия категории по умолчанию
-                    filename = uploaded_file.name
-                    base_name = os.path.splitext(filename)[0]
-                    if not st.session_state.category_name:
-                        st.session_state.category_name = base_name
-
-            # Редактирование названия категории
-            st.markdown("### Название категории")
-            st.text_input(
-                "Измените название категории (по умолчанию - имя файла)",
-                value=st.session_state.category_name,
-                key="category_name_input"
-            )
-
-        # Глобальный Top N
+    with col_right:
         st.number_input(
-            "Глобальный Top N для всех характеристик",
-            1, 100,
-            st.session_state.global_top_n,
+            "🌐 Глобальный Top N для всех характеристик",
+            min_value=1,
+            max_value=100,
+            value=st.session_state.global_top_n,
             key="global_top_n_input",
-            on_change=update_global_top_n
+            on_change=update_global_top_n,
+            help="Будет применён ко всем характеристикам в режиме 'Top N'"
         )
+
+    # 4. Название категории (показываем только если файл загружен)
+    if uploaded_file:
+        st.markdown("---")  # визуальный разделитель
+        st.markdown("### 🏷️ Название категории для экспорта")
+        col_cat1, col_cat2 = st.columns([1, 3])
+        with col_cat2:
+            st.text_input(
+                "Измените название категории (по умолчанию — имя файла)",
+                value=st.session_state.category_name,
+                key="category_name_input",
+                label_visibility="collapsed"
+            )
 
     # --- Основной интерфейс ---
     if uploaded_file and st.session_state.raw_data:
@@ -660,92 +676,66 @@ def main():
             char_id = char["id"]
             all_vals_count = len(char['values_data'])
 
-            # Сохраняем количество значений для использования в коллбэках
+            # --- Инициализация session_state ---
             st.session_state[f"vals_count_{char_id}"] = all_vals_count
+            if f"expanded_{char_id}" not in st.session_state:
+                st.session_state[f"expanded_{char_id}"] = False
 
-            # Отображаемое имя
             display_name = st.session_state.edited_names.get(char_id, char['name'])
 
+            # --- Класс карточки ---
+            container_class = ""
+            if char['is_duplicate']:
+                container_class = "duplicate-char"
+            elif char['is_extra']:
+                container_class = "extra-char"
+            else:
+                container_class = "normal-char"
+            container_class += " characteristic-container"
+
             with st.container():
-                # Определяем класс в зависимости от типа характеристики
-                container_class = ""
-                if char['is_duplicate']:
-                    container_class = "duplicate-char"
-                elif char['is_extra']:
-                    container_class = "extra-char"
-                else:
-                    container_class = "normal-char"
+                st.markdown(f'<div class="{container_class}">', unsafe_allow_html=True)
 
-                # Добавляем класс активности
-                if not char['is_extra']:  # По умолчанию активны не-дополнительные характеристики
-                    container_class += " active-char"
-                else:
-                    container_class += " inactive-char"
+                # --- КОМПАКТНАЯ СТРОКА (5 колонок) ---
+                cols = st.columns([2.2, 1, 0.7, 2.2, 0.6])
 
-                # Применяем стиль через div обертку
-                st.markdown(f'<div class="characteristic-container {container_class}">', unsafe_allow_html=True)
-
-                col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 2, 1])
-
-                with col1:
-                    # Отображение имени с иконкой дубликата
-                    name_display = f"**{display_name}**"
-                    if char['is_duplicate']:
-                        name_display = f"🔄 {name_display}"
-
+                # 1) Название + ID/приоритет/единица
+                with cols[0]:
                     is_active = st.checkbox(
-                        name_display,
+                        f"**{display_name}**" + (" 🔄" if char['is_duplicate'] else ""),
                         value=not char['is_extra'],
                         key=f"act_{char_id}"
                     )
-
-                    # Дополнительная информация
-                    st.caption(f"ID: {char['id']} | Приоритет: {char['priority']}")
-
-                    if display_name != char['original_name']:
-                        st.caption(f"Оригинальное: {char['original_name']}")
-
-                    if char['is_extra']:
-                        st.warning("Доп. характеристика", icon="⚠️")
+                    info_parts = []
+                    if char['id']:
+                        info_parts.append(f"ID:{char['id']}")
+                    if char['priority']:
+                        info_parts.append(f"P:{char['priority']}")
                     if char['unit']:
-                        st.caption(f"Ед. изм: {char['unit']}")
+                        info_parts.append(char['unit'])
+                    st.caption(" | ".join(info_parts))
 
-                    # Кнопки для JSON и предпросмотра с динамическим текстом
-                    col_btn1, col_btn2 = st.columns(2)
-                    with col_btn1:
-                        json_state = st.session_state.get(f"json_{char_id}", False)
-                        json_label = "✕ Закрыть JSON" if json_state else "📋 JSON"
-                        if st.button(json_label, key=f"btn_json_{char_id}",
-                                     help="Показать/скрыть JSON и редактировать название",
-                                     width='stretch'):
-                            toggle_json(char_id)
-                    with col_btn2:
-                        preview_state = st.session_state.get(f"preview_{char_id}", False)
-                        preview_label = "👁️ Предпросмотр" if preview_state else "👁️ Предпросмотр"
-                        if st.button(preview_label, key=f"btn_preview_{char_id}", width='stretch'):
-                            toggle_preview(char_id)
-
-                with col2:
-                    st.write(f"Заполнено: {char['fill_rate']:.1f}%")
-                    is_unique = st.checkbox("Уникальная", key=f"uniq_{char_id}")
-
-                with col3:
-                    sort_by = st.selectbox(
-                        "Сортировка",
-                        ["Предложения", "Кол-во товаров"],
-                        key=f"sort_{char_id}",
-                        label_visibility="collapsed"
+                # 2) Заполненность + сумма предложений
+                with cols[1]:
+                    total_offers = sum(v['offers'] for v in char['values_data'].values())
+                    st.markdown(
+                        f"<span style='font-size:0.9rem;'>📊 {char['fill_rate']:.0f}%</span><br>"
+                        f"<span style='font-size:0.8rem; color:#64748b;'>📦 {total_offers}</span>",
+                        unsafe_allow_html=True
                     )
 
-                with col4:
-                    # Инициализация режима
+                # 3) Чекбокс «Уникальная» (всегда виден)
+                with cols[2]:
+                    st.checkbox("Уникальная", key=f"uniq_{char_id}", help="Только уникальные значения")
+
+                # 4) Режим и контролы (Все / Top N / Вручную)
+                with cols[3]:
                     mode_key = f"mode_{char_id}"
                     if mode_key not in st.session_state:
                         st.session_state[mode_key] = st.session_state.global_mode
 
-                    # Радио-кнопка режима
                     mode = st.radio(
-                        "Объем данных",
+                        "Режим",
                         ["Все", "Top N", "Вручную"],
                         index=["Все", "Top N", "Вручную"].index(st.session_state[mode_key]),
                         key=mode_key,
@@ -753,121 +743,153 @@ def main():
                         label_visibility="collapsed"
                     )
 
-                    # Настройки в зависимости от режима
-                    n_val = st.session_state.global_top_n
-
                     if mode == "Top N":
-                        safe_max_val = max(1, all_vals_count)
-                        safe_default_val = min(st.session_state.global_top_n, safe_max_val)
-
-                        # Инициализируем значение если его нет
+                        safe_max = max(1, all_vals_count)
+                        safe_default = min(st.session_state.global_top_n, safe_max)
                         topn_key = f"topn_{char_id}"
                         if topn_key not in st.session_state:
-                            st.session_state[topn_key] = safe_default_val
-
-                        n_val = st.number_input(
-                            "N значений",
+                            st.session_state[topn_key] = safe_default
+                        st.number_input(
+                            "N",
                             min_value=1,
-                            max_value=safe_max_val,
+                            max_value=safe_max,
                             value=st.session_state[topn_key],
                             key=topn_key,
                             label_visibility="collapsed"
                         )
                     elif mode == "Вручную" and all_vals_count > 0:
-                        # Ограничиваем показ значений для мультиселекта
-                        available_values = list(char['values_data'].keys())
-                        if len(available_values) > 50:
-                            available_values = available_values[:50]
-
-                        manual_vals = st.multiselect(
+                        available_vals = list(char['values_data'].keys())
+                        if len(available_vals) > 50:
+                            available_vals = available_vals[:50]
+                        st.multiselect(
                             "Выберите значения",
-                            available_values,
+                            available_vals,
                             key=f"manual_{char_id}",
                             label_visibility="collapsed"
                         )
-                        n_val = manual_vals
                     elif mode == "Вручную":
-                        st.info("Нет значений", icon="ℹ️")
-                        n_val = []
-                    else:
-                        n_val = "all"
+                        st.caption("Нет значений")
 
-                with col5:
-                    # Пустая колонка для выравнивания
-                    pass
+                # 5) Кнопка раскрытия (▶/▼)
+                with cols[4]:
+                    expand_label = "▼" if st.session_state[f"expanded_{char_id}"] else "▶"
+                    if st.button(
+                            expand_label,
+                            key=f"expand_btn_{char_id}",
+                            help="Дополнительные настройки и просмотр",
+                            type="secondary"
+                    ):
+                        st.session_state[f"expanded_{char_id}"] = not st.session_state[f"expanded_{char_id}"]
+                        st.rerun()
 
-                # --- JSON редактор ---
-                if st.session_state.get(f"json_{char_id}", False):
-                    with st.expander(f"📝 Редактирование: {display_name}", expanded=True):
-                        col_edit1, col_edit2 = st.columns([3, 1])
-                        with col_edit1:
-                            st.text_input(
-                                "Новое название",
-                                value=display_name,
-                                key=f"edit_name_{char_id}"
-                            )
-                        with col_edit2:
-                            if st.button("💾 Сохранить", key=f"save_name_{char_id}"):
-                                save_edited_name(char_id)
-                            if st.button("❌ Отмена", key=f"cancel_edit_{char_id}"):
-                                st.session_state[f"json_{char_id}"] = False
+                # --- РАСКРЫВАЕМАЯ ПАНЕЛЬ (сортировка, предпросмотр, JSON) ---
+                if st.session_state.get(f"expanded_{char_id}", False):
+                    st.markdown('<div class="compact-details-panel">', unsafe_allow_html=True)
 
-                        # Просмотр JSON данных
-                        st.markdown("### 📊 Исходные данные")
-                        char_data = None
-                        for param in raw_data.get("ПараметрыТовара", {}).get("Характеристики", []):
-                            if param.get("ID") == char_id:
-                                char_data = param
-                                break
+                    # Сортировка (только здесь)
+                    sort_by = st.selectbox(
+                        "Сортировка значений",
+                        ["Предложения", "Кол-во товаров"],
+                        key=f"sort_{char_id}",
+                        label_visibility="visible"
+                    )
 
-                        if char_data:
-                            st.json(char_data)
+                    # Кнопки предпросмотра и JSON
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        preview_state = st.session_state.get(f"preview_{char_id}", False)
+                        preview_label = "🔍 Предпросмотр"
+                        if st.button(preview_label, key=f"btn_preview_{char_id}"):
+                            st.session_state[f"preview_{char_id}"] = not preview_state
+                            st.rerun()
+                    with col_btn2:
+                        json_state = st.session_state.get(f"json_{char_id}", False)
+                        json_label = "📋 JSON"
+                        if st.button(json_label, key=f"btn_json_{char_id}"):
+                            st.session_state[f"json_{char_id}"] = not json_state
+                            st.rerun()
 
-                # --- Предпросмотр значений ---
-                if st.session_state.get(f"preview_{char_id}", False):
-                    with st.expander(f"🔍 Предпросмотр значений: {display_name}", expanded=True):
-                        if all_vals_count == 0:
-                            st.info("Нет значений для отображения")
-                        else:
-                            # Подготовка данных для предпросмотра
-                            sorted_vals = []
-                            for val, stats in char['values_data'].items():
-                                sorted_vals.append({
-                                    "Значение": val[:100] + ("..." if len(val) > 100 else ""),
-                                    "Товары": stats["count"],
-                                    "Предложения": stats["offers"],
-                                    "%": f"{(stats['count'] / len(raw_data['Товары']) * 100):.1f}"
-                                })
-
-                            # Сортировка
-                            if sort_by == "Предложения":
-                                sorted_vals.sort(key=lambda x: x['Предложения'], reverse=True)
+                    # --- Предпросмотр значений (если включён) ---
+                    if st.session_state.get(f"preview_{char_id}", False):
+                        with st.expander("🔍 Предпросмотр значений", expanded=True):
+                            if all_vals_count == 0:
+                                st.info("Нет значений")
                             else:
-                                sorted_vals.sort(key=lambda x: x['Товары'], reverse=True)
+                                sorted_vals = []
+                                for val, stats in char['values_data'].items():
+                                    sorted_vals.append({
+                                        "Значение": val[:100] + ("..." if len(val) > 100 else ""),
+                                        "Товары": stats["count"],
+                                        "Предложения": stats["offers"],
+                                        "%": f"{(stats['count'] / len(raw_data['Товары']) * 100):.1f}"
+                                    })
 
-                            # Ограничение до топ-10
-                            preview_size = min(10, len(sorted_vals))
-                            st.write(f"**Топ-{preview_size} значений** (всего: {all_vals_count})")
+                                # Сортировка по выбранному критерию
+                                sort_key = "offers" if sort_by == "Предложения" else "items_count"
+                                reverse = True
+                                # в sorted_vals ключи "Предложения" и "Товары"
+                                if sort_by == "Предложения":
+                                    sorted_vals.sort(key=lambda x: x['Предложения'], reverse=True)
+                                else:
+                                    sorted_vals.sort(key=lambda x: x['Товары'], reverse=True)
 
-                            # Таблица
-                            st.dataframe(
-                                sorted_vals[:preview_size],
-                                use_container_width=True,
-                                height=min(400, preview_size * 35 + 40)
-                            )
+                                preview_size = min(10, len(sorted_vals))
+                                st.write(f"**Топ-{preview_size} значений** (всего: {all_vals_count})")
+                                st.dataframe(
+                                    sorted_vals[:preview_size],
+                                    use_container_width=True,
+                                    height=min(400, preview_size * 35 + 40)
+                                )
 
+                    # --- Редактор JSON (если включён) ---
+                    if st.session_state.get(f"json_{char_id}", False):
+                        with st.expander("📝 Редактирование / JSON", expanded=True):
+                            col_edit1, col_edit2 = st.columns([3, 1])
+                            with col_edit1:
+                                st.text_input(
+                                    "Новое название",
+                                    value=display_name,
+                                    key=f"edit_name_{char_id}"
+                                )
+                            with col_edit2:
+                                if st.button("💾 Сохранить", key=f"save_name_{char_id}"):
+                                    # логика сохранения
+                                    st.session_state.edited_names[char_id] = st.session_state[f"edit_name_{char_id}"]
+                                    st.session_state[f"json_{char_id}"] = False
+                                    st.rerun()
+                                if st.button("❌ Отмена", key=f"cancel_edit_{char_id}"):
+                                    st.session_state[f"json_{char_id}"] = False
+                                    st.rerun()
+
+                            st.markdown("### 📊 Исходные данные")
+                            char_data = None
+                            for param in raw_data.get("ПараметрыТовара", {}).get("Характеристики", []):
+                                if param.get("ID") == char_id:
+                                    char_data = param
+                                    break
+                            if char_data:
+                                st.json(char_data)
+
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                # --- Сохраняем конфигурацию, если активна ---
                 if is_active:
+                    n_val_selected = (
+                        st.session_state.get(f"topn_{char_id}", "all") if mode == "Top N"
+                        else (st.session_state.get(f"manual_{char_id}", []) if mode == "Вручную" else "all")
+                    )
                     selected_configs[char_id] = {
                         "name": display_name,
                         "original_name": char['original_name'],
                         "unit": char['unit'],
-                        "is_unique": is_unique,
-                        "sort_by": sort_by,
+                        "is_unique": st.session_state.get(f"uniq_{char_id}", False),
+                        "sort_by": st.session_state.get(f"sort_{char_id}", "Предложения"),
                         "mode": mode,
-                        "n_val": n_val,
+                        "n_val": n_val_selected,
                         "source_data": char['values_data'],
                         "is_duplicate": char['is_duplicate']
                     }
+
                 st.markdown('</div>', unsafe_allow_html=True)
 
         # --- Генерация итогового массива ---

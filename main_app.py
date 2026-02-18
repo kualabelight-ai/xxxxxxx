@@ -3,338 +3,93 @@ import json
 from pathlib import Path
 import os
 from datetime import datetime
-
-
-# =============================================================================
-# ДИЗАЙН-СИСТЕМА – минималистичный премиальный UI (Linear / Vercel стиль)
-# Только CSS, без изменения логики.
-# =============================================================================
+from styles import load_css
+# --- CSS стили для всего приложения ---
 def local_css():
     st.markdown("""
     <style>
-    /* ---------- CSS Variables (используем Streamlit theme) ---------- */
-    :root {
-        --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-        --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
-
-        /* Отступы – строгая система */
-        --space-xs: 4px;
-        --space-sm: 8px;
-        --space-md: 16px;
-        --space-lg: 24px;
-        --space-xl: 32px;
-        --space-2xl: 48px;
-
-        /* Скругления – мягкие, но сдержанные */
-        --radius-sm: 6px;
-        --radius-md: 8px;
-        --radius-lg: 12px;
-        --radius-xl: 16px;
-
-        /* Тени – почти незаметные, только глубина */
-        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.02);
-        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -1px rgba(0, 0, 0, 0.01);
-        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.02), 0 4px 6px -2px rgba(0, 0, 0, 0.01);
-
-        /* Transition – плавно, без рывков */
-        --transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
-    }
-
-    /* ---------- Базовые настройки ---------- */
-    .stApp {
-        background-color: var(--background-color);
-        color: var(--text-color);
-        font-family: var(--font-sans);
-        -webkit-font-smoothing: antialiased;
-        -moz-osx-font-smoothing: grayscale;
-    }
-
-    /* Убираем весь визуальный мусор */
-    .stApp > header {
-        background-color: transparent !important;
-    }
-    .stApp [data-testid="stToolbar"] {
-        display: none;
-    }
-
-    /* ---------- Типографика – строгая иерархия ---------- */
-    h1, h2, h3, h4, h5, h6 {
-        font-weight: 500;
-        letter-spacing: -0.01em;
-        color: var(--text-color);
-    }
-    h1 {
-        font-size: 2rem;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-        margin-bottom: var(--space-sm);
-    }
-    h2 {
-        font-size: 1.5rem;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-        margin-bottom: var(--space-md);
-    }
-    h3 {
-        font-size: 1.25rem;
-        font-weight: 500;
-        margin-bottom: var(--space-sm);
-    }
-    p, li, .stMarkdown {
-        font-size: 0.9375rem;
-        line-height: 1.6;
-        color: var(--text-color);
-    }
-    .text-secondary {
-        font-size: 0.875rem;
-        color: var(--text-color);
-        opacity: 0.65;
-    }
-    .text-small {
-        font-size: 0.8125rem;
-        opacity: 0.6;
-    }
-
-    /* ---------- Карточки фаз – премиальный дашборд ---------- */
-    .phase-card {
-        background-color: var(--secondary-background-color);
-        border: 1px solid var(--secondary-background-color);
-        border-radius: var(--radius-lg);
-        padding: var(--space-lg);
-        transition: var(--transition);
-        box-shadow: var(--shadow-sm);
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-    }
-    .phase-card:hover {
-        border-color: rgba(128, 128, 128, 0.1);
-        box-shadow: var(--shadow-md);
-        transform: translateY(-2px);
-    }
-    .phase-card.active {
-        border: 1px solid var(--primary-color);
-        box-shadow: 0 0 0 2px rgba(var(--primary-color-rgb), 0.08);
-        background-color: var(--secondary-background-color);
-    }
-    .phase-card.completed {
-        opacity: 0.9;
-    }
-    .phase-card.pending {
-        opacity: 0.7;
-    }
-    .phase-header {
-        display: flex;
-        align-items: center;
-        gap: var(--space-sm);
-        margin-bottom: var(--space-sm);
-    }
-    .phase-icon {
-        font-size: 1.5rem;
-        line-height: 1;
-    }
-    .phase-title {
-        font-weight: 600;
-        font-size: 1.1rem;
-        color: var(--text-color);
-        margin: 0;
-    }
-    .phase-description {
-        font-size: 0.875rem;
-        color: var(--text-color);
-        opacity: 0.65;
-        margin-bottom: var(--space-md);
-        flex: 1;
-    }
-    .phase-status {
-        display: inline-flex;
-        align-items: center;
-        gap: var(--space-xs);
-        font-size: 0.75rem;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 0.02em;
-        color: var(--text-color);
-        opacity: 0.8;
-        margin-top: var(--space-xs);
-    }
-    .status-dot {
-        display: inline-block;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background-color: currentColor;
-    }
-    .status-dot.active { background-color: var(--primary-color); }
-    .status-dot.completed { background-color: #34a853; } /* зеленый, но приглушенный */
-    .status-dot.pending { background-color: #9aa0a6; }   /* серый */
-
-    /* Кнопки внутри карточек – минимализм */
-    .phase-card .stButton button {
-        background-color: transparent;
-        border: 1px solid rgba(128, 128, 128, 0.2);
-        border-radius: var(--radius-md);
-        color: var(--text-color);
-        font-size: 0.8125rem;
-        font-weight: 500;
-        padding: var(--space-xs) var(--space-md);
-        transition: var(--transition);
-        width: 100%;
-    }
-    .phase-card .stButton button:hover {
-        border-color: var(--primary-color);
-        color: var(--primary-color);
-        background-color: transparent;
-    }
-
-    /* ---------- Sidebar – чистая панель состояния ---------- */
-    [data-testid="stSidebar"] {
-        background-color: var(--background-color);
-        border-right: 1px solid rgba(128, 128, 128, 0.08);
-    }
-    [data-testid="stSidebar"] .stMarkdown {
-        color: var(--text-color);
-    }
-    .sidebar-section {
-        margin-bottom: var(--space-xl);
-    }
-    .sidebar-header {
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        font-weight: 600;
-        color: var(--text-color);
-        opacity: 0.5;
-        margin-bottom: var(--space-md);
-    }
-    .status-item {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: var(--space-sm) 0;
-        border-bottom: 1px solid rgba(128, 128, 128, 0.06);
-        font-size: 0.875rem;
-    }
-    .status-label {
-        display: flex;
-        align-items: center;
-        gap: var(--space-sm);
-        color: var(--text-color);
-        opacity: 0.8;
-    }
-    .status-value {
-        font-weight: 500;
-        color: var(--text-color);
-    }
-    .status-badge {
-        display: inline-flex;
-        align-items: center;
-        padding: 2px 8px;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        font-weight: 500;
-        background-color: rgba(128, 128, 128, 0.08);
-        color: var(--text-color);
-    }
-
-    /* ---------- Переопределение стандартных Streamlit сообщений – нейтральные, без цвета ---------- */
-    .stAlert {
-        background-color: transparent !important;
-        border: none !important;
-        border-bottom: 1px solid rgba(128, 128, 128, 0.08) !important;
-        border-radius: 0 !important;
-        padding: var(--space-sm) 0 !important;
-        color: var(--text-color) !important;
-    }
-    .stAlert [data-testid="stAlertIcon"] {
-        display: none;
-    }
-    .stAlert .stMarkdown {
-        color: var(--text-color) !important;
-        opacity: 0.8;
-        font-size: 0.875rem;
-    }
-    div[data-baseweb="notification"] {
-        background-color: transparent !important;
-        border: none !important;
-        border-bottom: 1px solid rgba(128, 128, 128, 0.08) !important;
-        border-radius: 0 !important;
-        box-shadow: none !important;
-    }
-
-    /* ---------- Expander – чистый ---------- */
-    .streamlit-expanderHeader {
-        background-color: transparent !important;
-        border: none !important;
-        border-bottom: 1px solid rgba(128, 128, 128, 0.08) !important;
-        font-size: 0.875rem !important;
-        font-weight: 500 !important;
-        color: var(--text-color) !important;
-        padding: var(--space-sm) 0 !important;
-    }
-    .streamlit-expanderContent {
-        border: none !important;
-        background-color: transparent !important;
-        padding: var(--space-md) 0 !important;
-    }
-
-    /* ---------- Divider – тонкая линия ---------- */
-    hr {
-        margin: var(--space-xl) 0 !important;
-        border: none !important;
-        border-top: 1px solid rgba(128, 128, 128, 0.08) !important;
-    }
-
-    /* ---------- Блок AI – отдельный, но вписанный ---------- */
-    .ai-card {
-        background-color: var(--secondary-background-color);
-        border: 1px solid var(--secondary-background-color);
-        border-radius: var(--radius-lg);
-        padding: var(--space-lg);
-        margin-top: var(--space-lg);
-    }
-    .ai-card .stButton button {
-        background-color: transparent;
-        border: 1px solid rgba(128, 128, 128, 0.2);
-        border-radius: var(--radius-md);
-        color: var(--text-color);
-    }
-    .ai-card .stButton button:hover {
-        border-color: var(--primary-color);
-        color: var(--primary-color);
-    }
+        /* Ретро-минимализм */
+        .stApp {
+            background-color: #faf7f2;
+            color: #3e3a36;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: #5e4b3c !important;
+            font-family: 'Courier New', monospace;
+        }
+        .stButton>button {
+            background-color: #e6dacd;
+            color: #4a3f38;
+            border: 1px solid #b7a99a;
+            border-radius: 6px;
+            font-size: 14px;
+            padding: 4px 12px;
+            transition: 0.2s;
+            font-family: 'Courier New', monospace;
+        }
+        .stButton>button:hover {
+            background-color: #d4c3b2;
+            border-color: #8c7a6a;
+        }
+        div.stAlert {
+            background-color: #f0ebe4;
+            border-left: 4px solid #b08968;
+            color: #3e3a36;
+            border-radius: 0;
+        }
+        div.stSuccess {
+            background-color: #e6f0da;
+            border-left: 4px solid #7f9f6f;
+        }
+        div.stWarning {
+            background-color: #fff1d6;
+            border-left: 4px solid #e6b89c;
+        }
+        div.stInfo {
+            background-color: #e1e7e0;
+            border-left: 4px solid #8d9f87;
+        }
+        hr {
+            border-top: 1px solid #d4c3a2;
+        }
+        .block-container {
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+        }
     </style>
     """, unsafe_allow_html=True)
 
 
-# =============================================================================
-# Класс состояния – БЕЗ ИЗМЕНЕНИЙ
-# =============================================================================
+# --- Класс для управления состоянием ---
 class AppState:
     def __init__(self):
+        # Инициализация состояния приложения
         if 'current_phase' not in st.session_state:
             st.session_state.current_phase = 1
+
         if 'app_data' not in st.session_state:
             st.session_state.app_data = {
                 'phase1': {},
                 'phase2': {},
-                'phase3': {},
+                'phase3': {},  # Данные редактирования блоков (если нужно)
                 'phase4': {},
                 'phase5': {},
-                'phase6': {},
+                'phase6': {},# Данные генерации промптов
                 'category': '',
                 'project_name': 'Новый проект'
             }
         if 'phase6_auto_load' not in st.session_state:
             st.session_state.phase6_auto_load = True
-
     def get_phase_data(self, phase):
+        """Получает данные для указанной фазы"""
         return st.session_state.app_data.get(f'phase{phase}', {})
 
     def set_phase_data(self, phase, data):
+        """Устанавливает данные для указанной фазы"""
         st.session_state.app_data[f'phase{phase}'] = data
 
     def get_all_data_for_phase3(self):
+        """Собирает все данные для фазы 3 (редактирование)"""
         return {
             'phase1_data': st.session_state.app_data.get('phase1', {}),
             'phase2_data': st.session_state.app_data.get('phase2', {}),
@@ -343,6 +98,7 @@ class AppState:
         }
 
     def get_all_data_for_phase4(self):
+        """Собирает все данные для фазы 4 (генерация)"""
         return {
             'phase1_data': st.session_state.app_data.get('phase1', {}),
             'phase2_data': st.session_state.app_data.get('phase2', {}),
@@ -351,6 +107,7 @@ class AppState:
         }
 
     def get_all_data_for_phase5(self):
+        """Собирает все данные для фазы 5 (генерация текстов)"""
         return {
             'phase1_data': st.session_state.app_data.get('phase1', {}),
             'phase2_data': st.session_state.app_data.get('phase2', {}),
@@ -360,267 +117,67 @@ class AppState:
         }
 
     def get_all_data_for_phase6(self):
+        """Собирает все данные для фазы 6"""
+        # Из фазы 5 нужно передать:
+        # 1. Результаты генерации текстов
+        # 2. Статистику
+        # 3. Настройки генерации
+
         phase5_data = self.get_phase_data(5)
+
         return {
             'phase1_data': st.session_state.app_data.get('phase1', {}),
             'phase2_data': st.session_state.app_data.get('phase2', {}),
             'phase4_data': st.session_state.app_data.get('phase4', {}),
-            'phase5_data': phase5_data,
+            'phase5_data': phase5_data,  # Основные данные из фазы 5
+
+            # Ключевые поля из фазы 5 для удобства доступа:
             'generation_results': phase5_data.get('results', {}),
             'generation_stats': phase5_data.get('statistics', {}),
             'generation_settings': phase5_data.get('generation_settings', {}),
             'category': st.session_state.app_data.get('category', ''),
             'project_name': st.session_state.app_data.get('project_name', ''),
+
+            # Дополнительные метаданные
             'total_prompts': phase5_data.get('statistics', {}).get('total', 0),
             'successful_generations': phase5_data.get('statistics', {}).get('success', 0)
         }
+# --- Функции для отображения фаз ---
 
 
-# =============================================================================
-# Карточка фазы – обновленный дизайн, но логика прежняя
-# =============================================================================
-def show_phase_card(phase_num, title, description, icon, status="pending"):
-    """Минималистичная карточка, статус отображается точкой."""
-    status_dot_class = {
-        "active": "active",
-        "completed": "completed",
-        "pending": "pending"
-    }.get(status, "pending")
-
-    # Кнопка "Перейти" показывается только если фаза активна?
-    # В оригинале кнопка была внутри карточки только для активной фазы.
-    # Оставляем как есть, но стилизуем.
-
-    with st.container():
-        st.markdown(f"""
-        <div class="phase-card {status}">
-            <div class="phase-header">
-                <span class="phase-icon">{icon}</span>
-                <span class="phase-title">Фаза {phase_num}: {title}</span>
-            </div>
-            <div class="phase-description">{description}</div>
-            <div class="phase-status">
-                <span class="status-dot {status_dot_class}"></span>
-                <span>{status.capitalize()}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if status == "active":
-            if st.button(f"Перейти", key=f"goto_phase_{phase_num}", use_container_width=True):
-                st.session_state.current_phase = phase_num
-                st.rerun()
-
-
-# =============================================================================
-# Главное приложение – только визуальная перестройка, логика нетронута
-# =============================================================================
+# --- Главное приложение ---
 def main():
     st.set_page_config(
         page_title="Data Harvester Pro",
         layout="wide",
-        initial_sidebar_state="expanded"
+        initial_sidebar_state="collapsed"
     )
 
-    local_css()
+    load_css()
 
-    # Состояние для AI настроек – без изменений
-    if 'show_ai_config' not in st.session_state:
-        st.session_state.show_ai_config = False
+    # ============ ВЕРХНЯЯ СТРОКА: ЛОГО + ШЕСТЕРЁНКА AI ============
+    col_logo, col_ai = st.columns([6, 1])
+    with col_logo:
+        st.markdown("""
+        <div style="display: flex; align-items: baseline;">
+            <h1 style="margin: 0; font-size: 2rem; color: #5e4b3c;">📀 DH</h1>
+            <span style="margin-left: 10px; font-size: 1.2rem; color: #7f6e5d;">Data Harvester Pro</span>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_ai:
+        # Кнопка-шестерёнка для настроек AI
+        if st.button("⚙️", key="ai_config_gear", help="Настройки AI"):
+            st.session_state.show_ai_config = True
+            st.rerun()
+    # ===============================================================
 
+    # Инициализация состояния приложения
     app_state = AppState()
 
-    # =========================================================================
-    # SIDEBAR – полностью переработан, стал компактным и чистым
-    # =========================================================================
-    with st.sidebar:
-        st.markdown('<div class="sidebar-header">Статус передачи данных</div>', unsafe_allow_html=True)
+    # ============ КОМПАКТНАЯ ПАНЕЛЬ ФАЗ (только этапы) ============
+    st.markdown("")  # небольшой отступ
 
-        # Данные фаз в виде компактного списка
-        phase1_data = app_state.get_phase_data(1)
-        phase2_data = app_state.get_phase_data(2)
-        phase4_data = app_state.get_phase_data(4)
-        phase5_data = app_state.get_phase_data(5)
-        phase6_data = app_state.get_phase_data(6)
-
-        # Фаза 1
-        with st.container():
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                st.markdown('<span class="status-label">📦 Фаза 1</span>', unsafe_allow_html=True)
-            with col2:
-                if phase1_data:
-                    st.markdown('<span class="status-badge">Готово</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="status-badge">Ожидание</span>', unsafe_allow_html=True)
-            if phase1_data:
-                st.caption(f"{phase1_data.get('category', '—')} · {len(phase1_data.get('characteristics', []))} хар.")
-
-        # Фаза 2
-        with st.container():
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                st.markdown('<span class="status-label">🏷️ Фаза 2</span>', unsafe_allow_html=True)
-            with col2:
-                if phase2_data:
-                    st.markdown('<span class="status-badge">Готово</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="status-badge">Ожидание</span>', unsafe_allow_html=True)
-            if phase2_data:
-                st.caption(f"{len(phase2_data.get('markers', []))} маркеров")
-
-        # Фаза 3
-        blocks_dir = Path("blocks")
-        has_blocks = blocks_dir.exists() and any(blocks_dir.iterdir())
-        with st.container():
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                st.markdown('<span class="status-label">📝 Фаза 3</span>', unsafe_allow_html=True)
-            with col2:
-                if has_blocks:
-                    st.markdown('<span class="status-badge">Готово</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="status-badge">Ожидание</span>', unsafe_allow_html=True)
-            if has_blocks:
-                block_count = len([d for d in blocks_dir.iterdir() if d.is_dir()])
-                st.caption(f"{block_count} блоков")
-
-        # Фаза 4
-        with st.container():
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                st.markdown('<span class="status-label">🚀 Фаза 4</span>', unsafe_allow_html=True)
-            with col2:
-                if phase4_data and phase4_data.get('prompts'):
-                    st.markdown('<span class="status-badge">Готово</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="status-badge">Ожидание</span>', unsafe_allow_html=True)
-            if phase4_data:
-                st.caption(f"{len(phase4_data.get('prompts', []))} промптов")
-
-        # Фаза 5
-        with st.container():
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                st.markdown('<span class="status-label">📄 Фаза 5</span>', unsafe_allow_html=True)
-            with col2:
-                if phase5_data and phase5_data.get('results'):
-                    st.markdown('<span class="status-badge">Готово</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="status-badge">Ожидание</span>', unsafe_allow_html=True)
-            if phase5_data:
-                st.caption(f"{len(phase5_data.get('results', {}))} текстов")
-
-        # Фаза 6
-        with st.container():
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                st.markdown('<span class="status-label">📊 Фаза 6</span>', unsafe_allow_html=True)
-            with col2:
-                if phase6_data and phase6_data.get('processed'):
-                    st.markdown('<span class="status-badge">Готово</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="status-badge">Ожидание</span>', unsafe_allow_html=True)
-            if phase6_data:
-                st.caption("Обработано")
-
-        st.divider()
-
-        # ========== AI НАСТРОЙКИ (компактно) ==========
-        st.markdown('<div class="sidebar-header">🤖 AI</div>', unsafe_allow_html=True)
-
-        ai_config_file = Path("config/ai_config.json")
-        has_ai_config = ai_config_file.exists()
-        if has_ai_config:
-            try:
-                with open(ai_config_file, 'r', encoding='utf-8') as f:
-                    ai_config = json.load(f)
-                    provider = ai_config.get("default_provider", "openai")
-                    provider_config = ai_config.get("providers", {}).get(provider, {})
-                    api_key_set = bool(provider_config.get("api_key", ""))
-                    if api_key_set:
-                        st.markdown(f'<span class="status-badge">{provider.upper()} · Активен</span>',
-                                    unsafe_allow_html=True)
-                    else:
-                        st.markdown(f'<span class="status-badge">{provider.upper()} · Нет ключа</span>',
-                                    unsafe_allow_html=True)
-            except:
-                st.markdown('<span class="status-badge">Ошибка конфига</span>', unsafe_allow_html=True)
-        else:
-            st.markdown('<span class="status-badge">Не настроен</span>', unsafe_allow_html=True)
-
-        if st.button("⚙️ Настроить AI", use_container_width=True):
-            st.session_state.show_ai_config = True
-
-        if st.session_state.get('show_ai_config', False):
-            with st.expander("AI настройки открыты", expanded=True):
-                st.caption("Используйте кнопку 'Закрыть' в основной области.")
-                if st.button("← Закрыть", key="close_ai_sidebar", use_container_width=True):
-                    st.session_state.show_ai_config = False
-                    st.rerun()
-
-        st.divider()
-
-        # ========== БЫСТРЫЙ ПЕРЕХОД – selectbox вместо 7 кнопок ==========
-        st.markdown('<div class="sidebar-header">⚡ Быстрый переход</div>', unsafe_allow_html=True)
-
-        phase_options = {
-            1: "Фаза 1: Сбор характеристик",
-            2: "Фаза 2: Управление маркерами",
-            3: "Фаза 3: Редактирование блоков",
-            4: "Фаза 4: Генерация промптов",
-            5: "Фаза 5: Генерация текстов",
-            6: "Фаза 6: Анализ и экспорт"
-        }
-        selected_phase = st.selectbox(
-            "Перейти к фазе",
-            options=list(phase_options.keys()),
-            format_func=lambda x: phase_options[x],
-            index=st.session_state.current_phase - 1,
-            label_visibility="collapsed"
-        )
-        if selected_phase != st.session_state.current_phase:
-            st.session_state.current_phase = selected_phase
-            st.rerun()
-
-        # Отдельная кнопка для AI (не фаза)
-        if st.button("⚙️ AI настройки", use_container_width=True):
-            st.session_state.show_ai_config = True
-            st.rerun()
-
-    # =========================================================================
-    # ОСНОВНАЯ ОБЛАСТЬ – полная перестройка сетки фаз
-    # =========================================================================
-    # Заголовок приложения – убираем тяжелый градиент, оставляем минимализм
-    st.markdown("""
-    <div style="margin-bottom: var(--space-2xl);">
-        <h1 style="margin-bottom: 4px;">Data Harvester Pro</h1>
-        <p class="text-secondary" style="margin-top: 0;">Комплексная обработка данных и генерация промптов с AI</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Если открыты настройки AI – показываем их и выходим
-    if st.session_state.get('show_ai_config', False):
-        st.markdown("---")
-        st.markdown("### 🤖 Настройки AI")
-        col_back1, col_back2 = st.columns([1, 5])
-        with col_back1:
-            if st.button("← Вернуться", use_container_width=True):
-                st.session_state.show_ai_config = False
-                st.rerun()
-        try:
-            from ai_config import show_ai_config_interface
-            show_ai_config_interface()
-        except ImportError:
-            st.error("Модуль ai_config.py не найден.")
-        except Exception as e:
-            st.error(f"Ошибка загрузки настроек AI: {e}")
-        return
-
-    # ========== ЭТАПЫ ОБРАБОТКИ ДАННЫХ – новая сетка 3+3 ==========
-    st.markdown("### 🎯 Этапы обработки данных")
-
-    # Определяем статусы фаз (без изменений в логике)
+    # Определяем статусы фаз (логика без дублирования)
     phase_status = {}
     for phase in [1, 2, 3, 4, 5, 6]:
         if phase == st.session_state.current_phase:
@@ -641,217 +198,183 @@ def main():
         else:
             phase_status[phase] = "completed" if st.session_state.app_data.get(f'phase{phase}') else "pending"
 
-    # Первый ряд: фазы 1-3
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        show_phase_card(1, "Сбор характеристик", "Загрузка и фильтрация характеристик товаров", "📦", phase_status[1])
-    with col2:
-        show_phase_card(2, "Управление маркерами", "Настройка ключевых слов для категорий", "🏷️", phase_status[2])
-    with col3:
-        show_phase_card(3, "Редактирование блоков", "Создание и настройка шаблонов промптов", "📝", phase_status[3])
+    # Отображаем фазы компактно
+    phase_cols = st.columns(6)
+    icons = ["📦", "🏷️", "📝", "🚀", "📄", "📊"]
+    titles = ["Сбор", "Маркеры", "Блоки", "Промпты", "Тексты", "Анализ"]
 
-    # Второй ряд: фазы 4-6
-    col4, col5, col6 = st.columns(3)
-    with col4:
-        show_phase_card(4, "Генерация промптов", "Создание промптов для ИИ на основе данных", "🚀", phase_status[4])
-    with col5:
-        show_phase_card(5, "Генерация текстов", "Создание текстов через ИИ и форматирование", "📄", phase_status[5])
-    with col6:
-        show_phase_card(6, "Анализ и экспорт", "Анализ результатов и финальный экспорт", "📊", phase_status[6])
+    for i, col in enumerate(phase_cols, 1):
+        with col:
+            status = phase_status[i]
+            if status == "active":
+                bg = "#f0e6d2"
+                border = "2px solid #b08968"
+            elif status == "completed":
+                bg = "#e6f0da"
+                border = "1px solid #7f9f6f"
+            else:
+                bg = "#f5f0e6"
+                border = "1px solid #d4c3a2"
 
-    # ========== ОТДЕЛЬНЫЙ БЛОК ДЛЯ AI НАСТРОЕК ==========
-    st.markdown('<div class="ai-card">', unsafe_allow_html=True)
-    ai_col1, ai_col2, ai_col3 = st.columns([1, 2, 1])
-    with ai_col1:
-        st.markdown("### ⚙️ AI")
-    with ai_col2:
-        st.markdown('<p class="text-secondary" style="margin-bottom:0;">Управление AI API и параметрами генерации</p>',
-                    unsafe_allow_html=True)
-    with ai_col3:
-        if st.button("⚙️ Открыть настройки AI", key="ai_config_main", use_container_width=True):
-            st.session_state.show_ai_config = True
+            st.markdown(f"""
+            <div style="background-color: {bg}; border: {border}; border-radius: 8px; padding: 6px 4px; text-align: center; margin-bottom: 5px;">
+                <div style="font-size: 20px;">{icons[i-1]}</div>
+                <div style="font-size: 12px; font-weight: bold;">{titles[i-1]}</div>
+                <div style="font-size: 11px; color: #5e4b3c;">Фаза {i}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Маленькая кнопка перехода без растяжения
+            if st.button("▶", key=f"phase_{i}"):
+                st.session_state.current_phase = i
+                st.rerun()
+
+    st.markdown("---")  # разделитель перед контентом фазы
+    # ===============================================================
+
+    # ============ ПРОВЕРКА НАСТРОЕК AI ============
+    if st.session_state.get('show_ai_config', False):
+        st.markdown("---")
+        st.title("🤖 Настройки AI")
+        if st.button("← Вернуться"):
+            st.session_state.show_ai_config = False
             st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
-    st.divider()
+        try:
+            from ai_config import show_ai_config_interface
+            show_ai_config_interface()
+        except Exception as e:
+            st.error(f"Ошибка загрузки настроек AI: {e}")
+        return  # не показываем фазы
+    # ==============================================
 
-    # ========== ТЕКУЩАЯ ФАЗА – отображение контента ==========
-    st.markdown(f"### 🎮 Текущая фаза: {st.session_state.current_phase}")
-
-    # Получаем данные (без изменений)
+    # ============ ЗАГРУЗКА ТЕКУЩЕЙ ФАЗЫ ============
     phase1_data = app_state.get_phase_data(1)
     phase2_data = app_state.get_phase_data(2)
     phase4_data = app_state.get_phase_data(4)
     phase5_data = app_state.get_phase_data(5)
 
-    # ========== ИНФОРМАЦИОННЫЕ БЛОКИ – теперь без визуального шума,
-    # но логика полностью сохранена ==========
-    if st.session_state.current_phase == 2 and phase1_data:
-        st.info(
-            f"📥 Данные из фазы 1: **{phase1_data.get('category', '—')}** ({len(phase1_data.get('characteristics', []))} характеристик)")
+    if st.session_state.current_phase == 1:
+        try:
+            import phase1
+            phase1.main()
+        except Exception as e:
+            st.error(f"Ошибка загрузки фазы 1: {e}")
+
+    elif st.session_state.current_phase == 2:
+        if phase1_data:
+            try:
+                import phase2
+                phase2.main()
+            except Exception as e:
+                st.error(f"Ошибка загрузки фазы 2: {e}")
+        else:
+            st.warning("⚠️ Сначала выполните фазу 1")
+            if st.button("← Перейти к фазе 1"):
+                st.session_state.current_phase = 1
+                st.rerun()
 
     elif st.session_state.current_phase == 3:
-        if phase1_data and phase2_data:
-            st.success(
-                f"✅ Категория: {phase1_data.get('category', '—')} · {len(phase2_data.get('markers', []))} маркеров")
-            st.caption("Фаза 3 поддерживает AI-генерацию инструкций. Настройте AI в боковой панели.")
-        else:
-            st.info("ℹ️ Фаза 3 работает независимо, но для тестирования нужны данные из фаз 1 и 2.")
+        try:
+            import phase3
+            phase3.main()
+        except Exception as e:
+            st.error(f"Ошибка загрузки фазы 3: {e}")
 
     elif st.session_state.current_phase == 4:
         if phase1_data and phase2_data:
-            st.success(
-                f"✅ Данные готовы: {phase1_data.get('category', '—')}, {len(phase2_data.get('markers', []))} маркеров, {len(phase1_data.get('characteristics', []))} характеристик")
-            # Проверка AI конфигурации
-            ai_config_file = Path("config/ai_config.json")
-            if ai_config_file.exists():
-                try:
-                    with open(ai_config_file, 'r', encoding='utf-8') as f:
-                        ai_config = json.load(f)
-                        provider = ai_config.get("default_provider", "openai")
-                        provider_config = ai_config.get("providers", {}).get(provider, {})
-                        if provider_config.get("api_key"):
-                            st.info(f"🤖 AI: {provider.upper()} готов")
-                        else:
-                            st.warning(f"⚠️ Требуется API ключ для {provider}")
-                except:
-                    st.warning("⚠️ Ошибка AI конфигурации")
-            else:
-                st.info("ℹ️ AI не настроен. Используйте боковую панель.")
-
             try:
                 import phase4
                 phase4.main()
             except Exception as e:
                 st.error(f"Ошибка загрузки фазы 4: {e}")
         else:
-            st.warning("⚠️ Недостаточно данных: выполните фазы 1 и 2")
+            st.warning("⚠️ Сначала выполните фазы 1 и 2")
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("← Фаза 1", use_container_width=True):
+                if st.button("← Фаза 1"):
                     st.session_state.current_phase = 1
                     st.rerun()
             with col2:
-                if st.button("← Фаза 2", use_container_width=True):
+                if st.button("← Фаза 2"):
                     st.session_state.current_phase = 2
                     st.rerun()
 
     elif st.session_state.current_phase == 5:
         if phase1_data and phase2_data and phase4_data:
-            st.success(
-                f"✅ Все данные загружены: {phase1_data.get('category', '—')}, {len(phase4_data.get('prompts', []))} промптов")
-            # Проверка AI
-            ai_config_file = Path("config/ai_config.json")
-            if ai_config_file.exists():
-                try:
-                    with open(ai_config_file, 'r', encoding='utf-8') as f:
-                        ai_config = json.load(f)
-                        provider = ai_config.get("default_provider", "openai")
-                        provider_config = ai_config.get("providers", {}).get(provider, {})
-                        if provider_config.get("api_key"):
-                            st.info(f"🤖 AI: {provider.upper()} готов")
-                        else:
-                            st.warning(f"⚠️ Требуется API ключ для {provider}")
-                except:
-                    st.warning("⚠️ Ошибка AI конфигурации")
-            else:
-                st.info("ℹ️ AI не настроен. Настройте в боковой панели.")
-
             try:
                 import phase5
                 phase5.main()
             except Exception as e:
                 st.error(f"Ошибка загрузки фазы 5: {e}")
         else:
-            st.warning("⚠️ Недостаточно данных: выполните фазы 1, 2 и 4")
+            st.warning("⚠️ Сначала выполните фазы 1, 2 и 4")
             cols = st.columns(3)
             with cols[0]:
-                if st.button("← Фаза 1", key="b1", use_container_width=True):
+                if st.button("← Фаза 1"):
                     st.session_state.current_phase = 1
                     st.rerun()
             with cols[1]:
-                if st.button("← Фаза 2", key="b2", use_container_width=True):
+                if st.button("← Фаза 2"):
                     st.session_state.current_phase = 2
                     st.rerun()
             with cols[2]:
-                if st.button("← Фаза 4", key="b4", use_container_width=True):
+                if st.button("← Фаза 4"):
                     st.session_state.current_phase = 4
                     st.rerun()
 
     elif st.session_state.current_phase == 6:
-        phase5_data = app_state.get_phase_data(5)
         if phase5_data:
-            st.success(f"✅ Данные из фазы 5 получены")
-            if not st.session_state.app_data.get('phase6'):
-                phase6_input_data = {
-                    'phase5_data': phase5_data,
-                    'category': st.session_state.app_data.get('category', ''),
-                    'project_name': st.session_state.app_data.get('project_name', ''),
-                    'phase1_data': st.session_state.app_data.get('phase1', {}),
-                    'phase2_data': st.session_state.app_data.get('phase2', {}),
-                    'phase4_data': st.session_state.app_data.get('phase4', {})
-                }
-                app_state.set_phase_data(6, {
-                    'input_data': phase6_input_data,
-                    'processed': False,
-                    'received_from_phase5': True,
-                    'received_at': datetime.now().isoformat()
-                })
-                st.caption("📥 Данные автоматически переданы из фазы 5")
-
             try:
                 import phase6
                 phase6.main()
-            except ImportError:
-                with st.expander("⚠️ Фаза 6 не реализована"):
-                    st.json(phase5_data)
             except Exception as e:
                 st.error(f"Ошибка загрузки фазы 6: {e}")
         else:
-            st.warning("⚠️ Для фазы 6 необходимо выполнить фазу 5")
-            if st.button("← Фаза 5", use_container_width=True):
+            st.warning("⚠️ Сначала выполните фазу 5")
+            if st.button("← Фаза 5"):
                 st.session_state.current_phase = 5
                 st.rerun()
+    # ==============================================
+    # ============ НАВИГАЦИЯ МЕЖДУ ФАЗАМИ ============
+    st.markdown("---")
+    col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
 
-    else:
-        # Фаза 1 и другие – загружаем модули
-        try:
-            if st.session_state.current_phase == 1:
-                import phase1
-                phase1.main()
-        except Exception as e:
-            st.error(f"Ошибка загрузки фазы {st.session_state.current_phase}: {e}")
-
-    # ========== НАВИГАЦИЯ (без изменений в логике) ==========
-    st.divider()
-    nav_col1, nav_col2 = st.columns(2)
-    with nav_col1:
+    with col_nav1:
         if st.session_state.current_phase > 1:
-            if st.button("← Предыдущая фаза", use_container_width=True):
+            if st.button("← Предыдущая фаза"):
                 st.session_state.current_phase -= 1
                 st.rerun()
-    with nav_col2:
-        if st.session_state.current_phase < 6:
-            if st.session_state.current_phase == 1:
-                can_proceed = bool(phase1_data)
-            elif st.session_state.current_phase == 2:
-                can_proceed = bool(phase1_data and phase2_data)
-            elif st.session_state.current_phase == 3:
-                can_proceed = bool(phase1_data and phase2_data)
-            elif st.session_state.current_phase == 4:
-                can_proceed = bool(phase1_data and phase2_data and phase4_data)
-            elif st.session_state.current_phase == 5:
-                can_proceed = bool(phase5_data)
-            else:
-                can_proceed = True
 
+    with col_nav3:
+        # Определяем, можно ли перейти к следующей фазе
+        can_proceed = False
+        current = st.session_state.current_phase
+
+        if current == 1:
+            can_proceed = bool(app_state.get_phase_data(1))
+        elif current == 2:
+            can_proceed = bool(app_state.get_phase_data(1) and app_state.get_phase_data(2))
+        elif current == 3:
+            # Фаза 3 считается выполненной, если есть папка blocks с файлами
+            blocks_dir = Path("blocks")
+            has_blocks = blocks_dir.exists() and any(blocks_dir.iterdir())
+            can_proceed = has_blocks
+        elif current == 4:
+            can_proceed = bool(app_state.get_phase_data(1) and app_state.get_phase_data(2) and app_state.get_phase_data(4))
+        elif current == 5:
+            can_proceed = bool(app_state.get_phase_data(1) and app_state.get_phase_data(2) and app_state.get_phase_data(4) and app_state.get_phase_data(5))
+        elif current == 6:
+            can_proceed = bool(app_state.get_phase_data(5))  # для фазы 6 достаточно данных из 5
+
+        if current < 6:
             if can_proceed:
-                if st.button("Следующая фаза →", type="primary", use_container_width=True):
+                if st.button("Следующая фаза →", type="primary"):
                     st.session_state.current_phase += 1
                     st.rerun()
             else:
-                st.caption("⚠️ Завершите текущую фазу")
-
+                st.info("⚠️ Завершите текущую фазу, чтобы перейти дальше")
+    # =================================================
 
 if __name__ == "__main__":
     main()
