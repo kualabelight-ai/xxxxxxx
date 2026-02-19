@@ -195,6 +195,9 @@ class FragmentBlock:
     added_value: Optional[str] = None
     special_symbols: List[Tuple[str, int, int]] = field(default_factory=list)
     last_modified: datetime = field(default_factory=datetime.now)
+    units_removed: List[str] = field(default_factory=list)
+    symbols_removed: List[str] = field(default_factory=list)
+    html_generated: bool = False
 
     def to_dict(self):
         return {
@@ -341,6 +344,21 @@ class EnhancedTextProcessor:
             "опишите:", "сформулируйте:", "составьте:", "подготовьте:"
         ]
 
+    def check_regular_brackets(self, text: str, expected_value: str) -> List[str]:
+        """
+        Проверяет, что в тексте есть подстроки вида [expected_value].
+        Возвращает список ошибок.
+        """
+        if not expected_value:
+            return []  # нет ожидаемого значения – не проверяем
+        pattern = r'\[' + re.escape(expected_value) + r'\]'
+        if re.search(pattern, text):
+            return []
+        # Если не нашли точное совпадение, проверяем наличие любых скобок
+        if self.pattern.search(text):
+            return [f"В regular-блоке ожидается значение [{expected_value}], но найдены другие скобки"]
+        else:
+            return [f"В regular-блоке отсутствует значение [{expected_value}]"]
     # --------------------------------------------------------------
     #  ЗАМЕНА ПЕРЕМЕННЫХ (ТОЛЬКО ЗАМЕНА, БЕЗ АВТОДОБАВЛЕНИЯ)
     # --------------------------------------------------------------
@@ -445,10 +463,7 @@ class EnhancedTextProcessor:
     # --------------------------------------------------------------
     #  ПРОВЕРКА ОТСУТСТВИЯ СКОБОК (ДЛЯ REGULAR)
     # --------------------------------------------------------------
-    def check_missing_brackets(self, text: str, block_type: str) -> List[str]:
-        if block_type == 'regular' and not self.pattern.search(text):
-            return ["В regular-блоке отсутствует значение в квадратных скобках [...]"]
-        return []
+
 
     # --------------------------------------------------------------
     #  УДАЛЕНИЕ ЕДИНИЦ
@@ -708,10 +723,10 @@ class Phase6Interface:
     def _init_ui_state(self):
         default_ui_state = {
             'selected_block_id': None,
-            'editing_mode': False,
+            # 'editing_mode': False,            # удалить
             'active_tab': 'fragments',
             'show_html': False,
-            'selected_issues': set(),
+            # 'selected_issues': set(),         # можно удалить
             'fragments_page': 1,
             'fragments_per_page': 20,
             'fragment_search': '',
@@ -720,7 +735,10 @@ class Phase6Interface:
             'insert_position_word_index': 0,
             'selected_units_global': [],
             'selected_symbols_global': [],
-            'compact_view': True
+            'compact_view': True,  # оставляем
+            'filtered_block_ids': [],  # новый список id после фильтрации
+            'current_block_index': 0, # индекс в этом списке
+            'editing_block_id': None
         }
         if 'ui_state' not in st.session_state:
             st.session_state.ui_state = default_ui_state.copy()
@@ -742,6 +760,12 @@ class Phase6Interface:
                 frag.added_value = None
             if not hasattr(frag, 'last_modified'):
                 frag.last_modified = datetime.now()
+            if not hasattr(frag, 'html_generated'):
+                frag.html_generated = False
+            if not hasattr(frag, 'units_removed'):
+                frag.units_removed = []
+            if not hasattr(frag, 'symbols_removed'):
+                frag.symbols_removed = []
             if isinstance(frag.last_modified, str):
                 try:
                     frag.last_modified = datetime.fromisoformat(frag.last_modified)
@@ -1033,7 +1057,8 @@ class Phase6Interface:
                 )
                 registry.add(trans)
                 all_removed.extend([(block.fragment_name, unit) for unit in set(removed)])
-
+            if removed:
+                block.units_removed = list(set(removed))
         if all_removed:
             st.success(f"✅ Удалены единицы из {len(set(b for b,_ in all_removed))} блоков")
             df = pd.DataFrame(all_removed, columns=["Фрагмент", "Единица"]).drop_duplicates()
@@ -1073,7 +1098,8 @@ class Phase6Interface:
                 )
                 registry.add(trans)
                 all_removed.extend([(block.fragment_name, sym) for sym in set(removed)])
-
+            if removed:
+                block.symbols_removed = list(set(removed))
         if all_removed:
             st.success(f"✅ Удалены спецсимволы из {len(set(b for b,_ in all_removed))} блоков")
             df = pd.DataFrame(all_removed, columns=["Фрагмент", "Символ"]).drop_duplicates()
@@ -1103,8 +1129,10 @@ class Phase6Interface:
             )
             registry.add(trans)
             generated += 1
+            block.html_generated = True
 
         st.success(f"🌐 HTML сгенерирован для {generated} блоков")
+
         if generated == 1 and block_id:
             st.markdown(blocks[0].html_text, unsafe_allow_html=True)
 
@@ -1117,7 +1145,7 @@ class Phase6Interface:
         for block in fm.fragments:
             # 1. Проверка regular-блоков на отсутствие скобок
             if block.block_type == 'regular':
-                missing = self.text_processor.check_missing_brackets(block.processed_text, block.block_type)
+                missing = self.text_processor.check_regular_brackets(block.processed_text, block.block_type)
                 if missing:
                     # Удаляем старые такие ошибки, добавляем новые
                     block.errors = [e for e in block.errors if "отсутствует значение в квадратных скобках" not in e]
@@ -1224,8 +1252,8 @@ class Phase6Interface:
         st.session_state.found_units = self._scan_units_in_texts()
         st.session_state.found_special_symbols = self._scan_special_symbols_in_texts()
 
-        self._manage_units_and_symbols()
-        self._add_reset_button()  # Кнопка сброса состояния
+        self._display_top_panel()
+          # Кнопка сброса состояния
 
         # Общие кнопки для массовых операций
         with st.container():
@@ -1257,7 +1285,9 @@ class Phase6Interface:
 
         st.markdown("---")
 
-        tab_options = ["📤 Экспорт отчета", "🏷️ Фрагменты", "⚠️ Проблемы", "📋 История замен", "🧩 Шаблоны и HTML"]
+
+
+        tab_options = ["🏷️ Фрагменты", "📋 История замен", "🧩 Шаблоны и HTML", "📤 Экспорт отчета"]
         default_tab = st.session_state.ui_state.get('active_tab', tab_options[0])
         if default_tab not in tab_options:
             default_tab = tab_options[0]
@@ -1272,15 +1302,71 @@ class Phase6Interface:
         st.session_state.ui_state['active_tab'] = active_tab
 
         if active_tab == tab_options[0]:
-            self._display_export_interface()
+            self._display_templates_interface()
+
         elif active_tab == tab_options[1]:
             self._display_fragments_interface()
         elif active_tab == tab_options[2]:
-            self._display_issues_interface()
-        elif active_tab == tab_options[3]:
             self._display_transformations_interface()
-        elif active_tab == tab_options[4]:
-            self._display_templates_interface()
+        elif active_tab == tab_options[3]:
+            self._display_export_interface()
+
+    def _display_top_panel(self):
+        with st.expander("⚙️ Настройки обработки (единицы, спецсимволы, сброс)", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("### 📏 Единицы измерения")
+                found_units = st.session_state.get('found_units', [])
+                if found_units:
+                    selected_units = st.multiselect(
+                        "Выберите единицы для удаления:",
+                        found_units,
+                        default=st.session_state.ui_state.get('selected_units_global', []),
+                        key="selected_units_global_widget"
+                    )
+                    st.session_state.ui_state['selected_units_global'] = selected_units
+                else:
+                    st.info("В текстах не найдено стандартных единиц.")
+                    st.session_state.ui_state['selected_units_global'] = []
+
+                new_unit = st.text_input("Добавить свою единицу:", key="new_unit_input")
+                if st.button("➕ Добавить единицу", use_container_width=True):
+                    if new_unit and new_unit not in st.session_state.units_manager['units']:
+                        st.session_state.units_manager['units'].append(new_unit)
+                        self.text_processor.add_unit_to_remove(new_unit)
+                        st.session_state.found_units = self._scan_units_in_texts()
+                        st.rerun()
+
+            with col2:
+                st.write("### ⚡ Специальные символы")
+                found_symbols = st.session_state.get('found_special_symbols', [])
+                if found_symbols:
+                    selected_symbols = st.multiselect(
+                        "Выберите символы для удаления:",
+                        found_symbols,
+                        default=st.session_state.ui_state.get('selected_symbols_global', []),
+                        key="selected_symbols_global_widget"
+                    )
+                    st.session_state.ui_state['selected_symbols_global'] = selected_symbols
+                else:
+                    st.info("Специальные символы не найдены.")
+                    st.session_state.ui_state['selected_symbols_global'] = []
+
+            st.divider()
+            col_apply, col_reset = st.columns(2)
+            with col_apply:
+                if st.button("🗑️ Удалить выбранные единицы и символы из ВСЕХ блоков", use_container_width=True):
+                    units = st.session_state.ui_state.get('selected_units_global', [])
+                    symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+                    if units:
+                        self._apply_unit_removal(units_to_remove=units)
+                    if symbols:
+                        self._apply_special_symbol_removal(symbols_to_remove=symbols)
+                    st.rerun()
+            with col_reset:
+                confirm = st.checkbox("Подтвердите сброс", key="top_reset_confirm")
+                if st.button("🔄 Сбросить состояние фазы 6", use_container_width=True, disabled=not confirm):
+                    self._reset_state()
     # ------------------------------------------------------------------
     #                     ЭКСПОРТ
     # ------------------------------------------------------------------
@@ -1363,39 +1449,28 @@ class Phase6Interface:
     #                     ФРАГМЕНТЫ (СПИСОК И РЕДАКТОР)
     # ------------------------------------------------------------------
     def _display_fragments_interface(self):
-        st.header("🏷️ Управление фрагментами")
+        st.header("🏷️ Фрагменты и блоки")
         fm = st.session_state.fragment_manager
 
         if not fm.fragments:
             st.info("Нет фрагментов для отображения")
             return
 
-        # Если выбран режим редактирования конкретного блока – показываем редактор
-        if st.session_state.ui_state.get('editing_mode') and st.session_state.ui_state.get('selected_block_id'):
-            block_id = st.session_state.ui_state['selected_block_id']
-            block = next((b for b in fm.fragments if b.id == block_id), None)
-            if block:
-                self._display_block_editor(block)
-                return
-            else:
-                st.session_state.ui_state['editing_mode'] = False
-                st.session_state.ui_state['selected_block_id'] = None
-
-        # Компактный вид - чекбокс
-        compact = st.checkbox("Компактный вид", value=st.session_state.ui_state.get('compact_view', True))
-        st.session_state.ui_state['compact_view'] = compact
-
-        # Фильтры
-        col1, col2, col3 = st.columns(3)
+        # --- Фильтры (без изменений) ---
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             filter_type = st.selectbox("Тип блока", ["Все", "regular", "unique", "other"], key="frag_filter_type")
         with col2:
-            filter_status = st.selectbox("Статус", ["Все", "pending", "error", "processed"], key="frag_filter_status")
+            status_options = ["Все", "pending", "error", "warning", "processed", "fixed"]
+            filter_status = st.selectbox("Статус", status_options, key="frag_filter_status")
         with col3:
             search_text = st.text_input("🔍 Поиск по тексту", value=st.session_state.ui_state.get('fragment_search', ''))
             st.session_state.ui_state['fragment_search'] = search_text
+        with col4:
+            fragment_names = ["Все фрагменты"] + sorted(fm.fragment_names)
+            selected_fragment = st.selectbox("Фрагмент", fragment_names, key="frag_filter_fragment")
 
-        # Применяем фильтры
+        # Применяем фильтры (как раньше)...
         filtered_blocks = fm.fragments.copy()
         if filter_type != "Все":
             filtered_blocks = [b for b in filtered_blocks if b.block_type == filter_type]
@@ -1407,8 +1482,146 @@ class Phase6Interface:
                 b for b in filtered_blocks
                 if search_lower in b.original_text.lower() or search_lower in b.processed_text.lower()
             ]
+        if selected_fragment != "Все фрагменты":
+            filtered_blocks = [b for b in filtered_blocks if b.fragment_name == selected_fragment]
 
-        # Пагинация
+        if not filtered_blocks:
+            st.info("Нет блоков, соответствующих фильтрам")
+            return
+
+        # Пагинация (как раньше)
+        per_page = st.selectbox("Блоков на странице", [10, 20, 50, 100], index=1, key="frag_per_page")
+        total_blocks = len(filtered_blocks)
+        total_pages = max(1, (total_blocks + per_page - 1) // per_page)
+        current_page = st.session_state.ui_state.get('fragments_page', 1)
+        if current_page > total_pages:
+            current_page = total_pages
+            st.session_state.ui_state['fragments_page'] = current_page
+
+        # Навигация по страницам (как раньше)
+        col_prev, col_page, col_next, col_info = st.columns([1, 2, 1, 3])
+        with col_prev:
+            if st.button("◀ Предыдущая", disabled=current_page <= 1, key="prev_page"):
+                st.session_state.ui_state['fragments_page'] = current_page - 1
+                st.rerun()
+        with col_page:
+            page = st.number_input("Страница", min_value=1, max_value=total_pages,
+                                   value=current_page, key="frag_page_input")
+            if page != current_page:
+                st.session_state.ui_state['fragments_page'] = page
+                st.rerun()
+        with col_next:
+            if st.button("Следующая ▶", disabled=current_page >= total_pages, key="next_page"):
+                st.session_state.ui_state['fragments_page'] = current_page + 1
+                st.rerun()
+        with col_info:
+            st.write(f"Всего блоков: {total_blocks}, страниц: {total_pages}")
+
+        start_idx = (current_page - 1) * per_page
+        end_idx = start_idx + per_page
+        page_blocks = filtered_blocks[start_idx:end_idx]
+
+        # Группируем по фрагментам
+        page_blocks_by_fragment = defaultdict(list)
+        for block in page_blocks:
+            page_blocks_by_fragment[block.fragment_name].append(block)
+
+        # Отображаем
+        for frag_name, blocks in page_blocks_by_fragment.items():
+            with st.expander(f"📁 **{frag_name}** ({len(blocks)} блоков)", expanded=True):
+                for block in blocks:
+                    self._render_editable_block(block)
+
+    def _render_editable_block(self, block: FragmentBlock):
+        # Определяем цвет рамки по статусу
+        border_color = "#ff4d4d" if block.errors else "#f0f2f6"
+        with st.container(border=True):
+            st.markdown(f"<div style='border-left: 5px solid {border_color}; padding: 10px;'>", unsafe_allow_html=True)
+
+            # Заголовок и краткая информация
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 2])
+            col1.markdown(f"**{block.fragment_name}** · `{block.block_type}`")
+            col2.markdown(f"Статус: `{block.status}`")
+            col3.markdown(f"Ошибок: {len(block.errors)}")
+
+            # Иконки операций
+            icons = []
+            if block.auto_corrected:
+                icons.append("🔧")
+            if block.html_generated:
+                icons.append("🌐")
+            if block.units_removed:
+                icons.append("⚖️")
+            if block.symbols_removed:
+                icons.append("⚡")
+            col4.markdown(" ".join(icons))
+
+            # Характеристика и значение
+            if block.characteristic_name or block.characteristic_value:
+                st.caption(f"📌 {block.characteristic_name or '—'}: {block.characteristic_value or '—'}")
+
+            # Превью текста
+            text_sample = block.processed_text[:200] + ("..." if len(block.processed_text) > 200 else "")
+            st.code(text_sample, language="text")
+
+            # Кнопка редактирования
+            editing_id = st.session_state.ui_state.get('editing_block_id', None)
+            if st.button("✏️ Редактировать", key=f"edit_btn_{block.id}", use_container_width=True):
+                # Закрываем предыдущий редактор, открываем новый
+                st.session_state.ui_state['editing_block_id'] = block.id
+                st.rerun()
+
+            # Если этот блок сейчас редактируется, показываем редактор
+            if editing_id == block.id:
+                self._display_inline_block_editor(block)
+
+            st.markdown("</div>", unsafe_allow_html=True)
+    def _render_editable_block(self, block: FragmentBlock):
+        # Определяем цвет рамки в зависимости от наличия ошибок
+        border_color = "#ff4d4d" if block.errors else "#f0f2f6"
+        with st.container(border=True):
+            st.markdown(f"<div style='border-left: 5px solid {border_color}; padding-left: 10px;'>",
+                        unsafe_allow_html=True)
+
+            # Заголовок блока с краткой информацией
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 2])
+            col1.markdown(f"**{block.fragment_name}** · `{block.block_type}`")
+            col2.markdown(f"Статус: `{block.status}`")
+            col3.markdown(f"Ошибок: {len(block.errors)}")
+            if col4.button("🔧 Операции", key=f"ops_{block.id}"):
+                # Показываем всплывающее меню с операциями (как было в карточке)
+                pass  # но лучше вынести кнопки ниже
+            icons = []
+            if block.auto_corrected:
+                icons.append("🔧")
+            if block.html_generated:
+                icons.append("🌐")
+            if block.units_removed:
+                icons.append("⚖️")
+            if block.symbols_removed:
+                icons.append("⚡")
+            if icons:
+                st.markdown(" ".join(icons))
+            # Характеристика и значение
+            if block.characteristic_name or block.characteristic_value:
+                st.caption(f"📌 {block.characteristic_name or '—'}: {block.characteristic_value or '—'}")
+
+            # Текущий текст (сокращённый)
+            text_sample = block.processed_text[:200] + ("..." if len(block.processed_text) > 200 else "")
+            st.code(text_sample, language="text")
+
+            # Кнопка для раскрытия редактора
+            expand_key = f"expand_{block.id}"
+            if st.button("✏️ Редактировать", key=expand_key, use_container_width=True):
+                st.session_state[f"editing_block_{block.id}"] = True
+
+            # Если включён режим редактирования – показываем полный редактор
+            if st.session_state.get(f"editing_block_{block.id}", False):
+                self._display_inline_block_editor(block)
+
+            st.markdown("</div>", unsafe_allow_html=True)
+    def _display_compact_list(self, filtered_blocks):
+        fm = st.session_state.fragment_manager
         per_page = st.selectbox("Записей на странице", [10, 20, 50, 100],
                                 index=1, key="frag_per_page")
         st.session_state.ui_state['fragments_per_page'] = per_page
@@ -1420,7 +1633,7 @@ class Phase6Interface:
             current_page = total_pages
             st.session_state.ui_state['fragments_page'] = current_page
 
-        # Навигация
+        # Навигация по страницам
         col_prev, col_page, col_next, col_info = st.columns([1, 2, 1, 3])
         with col_prev:
             if st.button("◀ Предыдущая", disabled=current_page <= 1, key="prev_page"):
@@ -1444,81 +1657,55 @@ class Phase6Interface:
         page_blocks = filtered_blocks[start_idx:end_idx]
 
         for block in page_blocks:
-            self._render_block_card(block, compact)
+            self._render_block_card(block)
 
-    def _render_block_card(self, block: FragmentBlock, compact: bool = True):
-        """Карточка блока с кнопками операций."""
-        if compact:
-            with st.container(border=True):
-                cols = st.columns([2, 1, 1, 1, 1])
-                cols[0].write(f"**{block.fragment_name}** ({block.block_type})")
-                cols[1].write(f"Статус: {block.status}")
-                cols[2].write(f"Ошибок: {len(block.errors)}")
-                if cols[3].button("✏️", key=f"edit_card_{block.id}", use_container_width=True):
-                    st.session_state.ui_state['selected_block_id'] = block.id
-                    st.session_state.ui_state['editing_mode'] = True
-                    st.rerun()
-                with cols[4].popover("⚙️", use_container_width=True):
-                    if st.button("🔄 Заменить переменные", key=f"replace_{block.id}", use_container_width=True):
-                        self._apply_variable_replacement(block.id)
-                        st.rerun()
-                    if st.button("🔧 Добавить значение", key=f"autofix_{block.id}", use_container_width=True):
-                        self._auto_insert_regular_blocks(block.id)
-                        st.rerun()
-                    if st.button("⚖️ Удалить единицы", key=f"remove_{block.id}", use_container_width=True):
-                        units = st.session_state.ui_state.get('selected_units_global', [])
-                        self._apply_unit_removal(block.id, units)
-                        st.rerun()
-                    if st.button("🌐 HTML", key=f"html_{block.id}", use_container_width=True):
-                        self._apply_generate_html(block.id)
-                        st.rerun()
-                    if st.button("⚡ Удалить спецсимволы", key=f"spec_{block.id}", use_container_width=True):
-                        symbols = st.session_state.ui_state.get('selected_symbols_global', [])
-                        self._apply_special_symbol_removal(block.id, symbols)
-                        st.rerun()
-                st.caption(f"{block.characteristic_name or '-'}: {block.characteristic_value or '-'}")
-        else:
-            with st.container(border=True):
-                cols = st.columns([3, 1, 1, 1])
-                cols[0].write(f"**{block.fragment_name}** ({block.block_type})")
-                cols[1].write(f"Статус: {block.status}")
-                cols[2].write(f"Ошибок: {len(block.errors)}")
-                if cols[3].button("✏️ Редактировать", key=f"edit_card_{block.id}", use_container_width=True):
-                    st.session_state.ui_state['selected_block_id'] = block.id
-                    st.session_state.ui_state['editing_mode'] = True
-                    st.rerun()
+    def _display_block_navigator(self):
+        fm = st.session_state.fragment_manager
+        filtered_ids = st.session_state.ui_state.get('filtered_block_ids', [])
+        if not filtered_ids:
+            st.warning("Нет блоков для отображения")
+            if st.button("← Назад к списку"):
+                st.session_state.ui_state['compact_view'] = True
+                st.session_state.ui_state['selected_block_id'] = None
+                st.rerun()
+            return
 
-                col_op1, col_op2, col_op3, col_op4, col_op5, _ = st.columns([1, 1, 1, 1, 1, 1])
-                with col_op1:
-                    if st.button("🔄 Заменить переменные", key=f"replace_{block.id}", use_container_width=True):
-                        self._apply_variable_replacement(block.id)
-                        st.rerun()
-                with col_op2:
-                    if st.button("🔧 Добавить значение", key=f"autofix_{block.id}", use_container_width=True):
-                        self._auto_insert_regular_blocks(block.id)
-                        st.rerun()
-                with col_op3:
-                    if st.button("⚖️ Удалить единицы", key=f"remove_{block.id}", use_container_width=True):
-                        units = st.session_state.ui_state.get('selected_units_global', [])
-                        self._apply_unit_removal(block.id, units)
-                        st.rerun()
-                with col_op4:
-                    if st.button("🌐 HTML", key=f"html_{block.id}", use_container_width=True):
-                        self._apply_generate_html(block.id)
-                        st.rerun()
-                with col_op5:
-                    if st.button("⚡ Удалить спецсимволы", key=f"spec_{block.id}", use_container_width=True):
-                        symbols = st.session_state.ui_state.get('selected_symbols_global', [])
-                        self._apply_special_symbol_removal(block.id, symbols)
-                        st.rerun()
+        current_index = st.session_state.ui_state.get('current_block_index', 0)
+        if current_index < 0 or current_index >= len(filtered_ids):
+            current_index = 0
+            st.session_state.ui_state['current_block_index'] = current_index
 
-                st.caption(f"ID: {block.id[:8]} | Хар-ка: {block.characteristic_name or '-'} | Знач: {block.characteristic_value or '-'}")
-                with st.expander("👁️ Текущий текст"):
-                    st.text(block.processed_text[:300] + ("..." if len(block.processed_text) > 300 else ""))
+        block_id = filtered_ids[current_index]
+        block = next((b for b in fm.fragments if b.id == block_id), None)
+        if not block:
+            st.error("Блок не найден")
+            return
 
-    def _display_block_editor(self, block: FragmentBlock):
         st.subheader(f"✏️ Редактирование: {block.fragment_name}")
 
+        # Навигационные кнопки
+        col_nav1, col_nav2, col_nav3, col_nav4 = st.columns([1, 1, 2, 1])
+        with col_nav1:
+            if st.button("◀ Предыдущий", disabled=current_index == 0, use_container_width=True):
+                new_index = current_index - 1
+                st.session_state.ui_state['current_block_index'] = new_index
+                st.session_state.ui_state['selected_block_id'] = filtered_ids[new_index]
+                st.rerun()
+        with col_nav2:
+            if st.button("Следующий ▶", disabled=current_index == len(filtered_ids) - 1, use_container_width=True):
+                new_index = current_index + 1
+                st.session_state.ui_state['current_block_index'] = new_index
+                st.session_state.ui_state['selected_block_id'] = filtered_ids[new_index]
+                st.rerun()
+        with col_nav3:
+            st.write(f"Блок {current_index + 1} из {len(filtered_ids)}")
+        with col_nav4:
+            if st.button("← К списку", use_container_width=True):
+                st.session_state.ui_state['compact_view'] = True
+                st.session_state.ui_state['selected_block_id'] = None
+                st.rerun()
+
+        # --- Информация о блоке ---
         col1, col2, col3, col4 = st.columns(4)
         col1.write(f"**Тип:** {block.block_type}")
         col2.write(f"**Хар-ка:** {block.characteristic_name or '-'}")
@@ -1546,12 +1733,267 @@ class Phase6Interface:
                 for sym, st_pos, end_pos in block.special_symbols[:20]:
                     st.write(f"- '{sym}' на {st_pos}-{end_pos}")
                 if len(block.special_symbols) > 20:
-                    st.write(f"... и ещё {len(block.special_symbols)-20}")
+                    st.write(f"... и ещё {len(block.special_symbols) - 20}")
 
         st.divider()
 
-        # --- КНОПКИ ОПЕРАЦИЙ ---
+        # --- Кнопки операций ---
         st.subheader("🛠️ Операции над текстом")
+        col_op1, col_op2, col_op3, col_op4, col_op5 = st.columns(5)
+        with col_op1:
+            if st.button("🔄 Заменить переменные", key=f"nav_replace_{block.id}", use_container_width=True):
+                self._apply_variable_replacement(block.id)
+                st.rerun()
+        with col_op2:
+            if st.button("🔧 Добавить значение", key=f"nav_autofix_{block.id}", use_container_width=True):
+                self._auto_insert_regular_blocks(block.id)
+                st.rerun()
+        with col_op3:
+            if st.button("⚖️ Удалить единицы", key=f"nav_remove_{block.id}", use_container_width=True):
+                units = st.session_state.ui_state.get('selected_units_global', [])
+                self._apply_unit_removal(block.id, units)
+                st.rerun()
+        with col_op4:
+            if st.button("🌐 HTML", key=f"nav_html_{block.id}", use_container_width=True):
+                self._apply_generate_html(block.id)
+                st.rerun()
+        with col_op5:
+            if st.button("⚡ Удалить спецсимволы", key=f"nav_spec_{block.id}", use_container_width=True):
+                symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+                self._apply_special_symbol_removal(block.id, symbols)
+                st.rerun()
+
+        st.divider()
+
+        # --- Вставка переменных (как в редакторе) ---
+        st.subheader("🔄 Вставка переменных")
+        textarea_key = f"nav_editor_text_{block.id}"
+        if textarea_key not in st.session_state:
+            st.session_state[textarea_key] = block.processed_text
+
+        col_pos1, col_pos2 = st.columns([2, 2])
+        with col_pos1:
+            insert_mode = st.radio(
+                "Позиция вставки:",
+                ["в конец", "в начало", "после слова"],
+                horizontal=True,
+                key=f"nav_ins_mode_{block.id}"
+            )
+        with col_pos2:
+            word_index = 0
+            if insert_mode == "после слова":
+                words = st.session_state[textarea_key].split()
+                if words:
+                    word_index = st.selectbox(
+                        "После какого слова:",
+                        options=list(range(len(words))),
+                        format_func=lambda i: f"{i + 1}. {words[i][:20]}",
+                        key=f"nav_ins_word_{block.id}"
+                    )
+                else:
+                    st.info("Текст пуст, вставка в конец")
+                    insert_mode = "в конец"
+
+        suggestions = self.vm.get_variable_suggestions()
+        city_vars = [v for v in suggestions if 'город' in v['name'].lower()]
+        product_vars = [v for v in suggestions if 'товар' in v['name'].lower()]
+        category_vars = [v for v in suggestions if 'категория' in v['name'].lower()]
+        prop_var = next((v for v in suggestions if v['type'] == 'prop'), None)
+        frag_var = next((v for v in suggestions if v['type'] == 'fragment'), None)
+        other_vars = [v for v in suggestions if v not in city_vars + product_vars + category_vars
+                      and v != prop_var and v != frag_var]
+
+        def insert_variable(text, var_value, mode, word_idx):
+            if mode == "в начало":
+                return var_value + " " + text if text else var_value
+            elif mode == "после слова" and word_idx < len(text.split()):
+                parts = text.split()
+                parts.insert(word_idx + 1, var_value)
+                return " ".join(parts)
+            else:
+                if text and not text.endswith(' '):
+                    text += ' '
+                return text + var_value
+
+        col_city, col_prod, col_cat, col_propfrag, col_other = st.columns(5)
+
+        with col_city:
+            with st.popover("🌆 Город", use_container_width=True):
+                for idx, var in enumerate(city_vars):
+                    if st.button(var['value'], key=f"nav_city_{block.id}_{idx}", use_container_width=True):
+                        st.session_state[textarea_key] = insert_variable(
+                            st.session_state[textarea_key],
+                            var['value'],
+                            insert_mode,
+                            word_index if insert_mode == "после слова" else 0
+                        )
+                        st.rerun()
+        with col_prod:
+            with st.popover("🏷️ Товар", use_container_width=True):
+                for idx, var in enumerate(product_vars):
+                    if st.button(var['value'], key=f"nav_prod_{block.id}_{idx}", use_container_width=True):
+                        st.session_state[textarea_key] = insert_variable(
+                            st.session_state[textarea_key],
+                            var['value'],
+                            insert_mode,
+                            word_index if insert_mode == "после слова" else 0
+                        )
+                        st.rerun()
+        with col_cat:
+            with st.popover("📂 Категория", use_container_width=True):
+                for idx, var in enumerate(category_vars):
+                    if st.button(var['value'], key=f"nav_cat_{block.id}_{idx}", use_container_width=True):
+                        st.session_state[textarea_key] = insert_variable(
+                            st.session_state[textarea_key],
+                            var['value'],
+                            insert_mode,
+                            word_index if insert_mode == "после слова" else 0
+                        )
+                        st.rerun()
+        with col_propfrag:
+            col_p, col_f = st.columns(2)
+            with col_p:
+                if prop_var and st.button("prop", key=f"nav_prop_{block.id}", use_container_width=True):
+                    st.session_state[textarea_key] = insert_variable(
+                        st.session_state[textarea_key],
+                        prop_var['value'],
+                        insert_mode,
+                        word_index if insert_mode == "после слова" else 0
+                    )
+                    st.rerun()
+            with col_f:
+                if frag_var and st.button("fragment", key=f"nav_frag_{block.id}", use_container_width=True):
+                    st.session_state[textarea_key] = insert_variable(
+                        st.session_state[textarea_key],
+                        frag_var['value'],
+                        insert_mode,
+                        word_index if insert_mode == "после слова" else 0
+                    )
+                    st.rerun()
+        with col_other:
+            with st.popover("📝 Прочие", use_container_width=True):
+                for idx, var in enumerate(other_vars):
+                    if st.button(var['name'], key=f"nav_other_{block.id}_{idx}", use_container_width=True):
+                        st.session_state[textarea_key] = insert_variable(
+                            st.session_state[textarea_key],
+                            var['value'],
+                            insert_mode,
+                            word_index if insert_mode == "после слова" else 0
+                        )
+                        st.rerun()
+
+        st.divider()
+
+        # --- Редактор текста ---
+        edited_text = st.text_area(
+            "Текст блока:",
+            value=st.session_state[textarea_key],
+            height=200,
+            key=textarea_key,
+            label_visibility="collapsed"
+        )
+        if st.session_state[textarea_key] != edited_text:
+            st.session_state[textarea_key] = edited_text
+
+        # --- Кнопка сохранения (и удаления, если нужно) ---
+        col_save, col_delete = st.columns(2)
+        with col_save:
+            if st.button("💾 Сохранить изменения", type="primary", key=f"nav_save_{block.id}", use_container_width=True):
+                old_text = block.processed_text
+                block.processed_text = edited_text
+                block.last_modified = datetime.now()
+                # Обновляем ошибки
+                missing = self.text_processor.check_regular_brackets(block.processed_text, block.block_type)
+                block.errors = [e for e in block.errors if "отсутствует значение в квадратных скобках" not in e]
+                if missing:
+                    block.errors.extend(missing)
+                    block.status = 'error'
+                else:
+                    block.status = 'fixed' if not block.errors else block.status
+                block.special_symbols = self.text_processor._find_special_symbols(block.processed_text)
+                trans = TextTransformation(
+                    block_id=block.id,
+                    fragment_name=block.fragment_name,
+                    transformation_type=TransformationType.MANUAL_CORRECTION,
+                    original=old_text,
+                    result=edited_text,
+                    severity=SeverityLevel.INFO,
+                    user="user"
+                )
+                st.session_state.transformation_registry.add(trans)
+                st.success("✅ Текст сохранён")
+                st.rerun()
+        with col_delete:
+            if st.button("🗑️ Удалить блок", key=f"nav_delete_{block.id}", use_container_width=True):
+                if fm.delete_block(block.id):
+                    st.success("Блок удалён")
+                    # После удаления обновляем список фильтров
+                    st.session_state.ui_state['filtered_block_ids'] = [b.id for b in fm.fragments]
+                    st.session_state.ui_state['current_block_index'] = 0
+                    st.session_state.ui_state['selected_block_id'] = None
+                    if st.session_state.ui_state['filtered_block_ids']:
+                        st.session_state.ui_state['selected_block_id'] = \
+                        st.session_state.ui_state['filtered_block_ids'][0]
+                    st.rerun()
+                else:
+                    st.error("Не удалось удалить блок")
+    def _render_block_card(self, block: FragmentBlock):
+        with st.container(border=True):
+            cols = st.columns([2, 1, 1, 1, 1])
+            cols[0].write(f"**{block.fragment_name}** ({block.block_type})")
+            cols[1].write(f"Статус: {block.status}")
+            cols[2].write(f"Ошибок: {len(block.errors)}")
+            if cols[3].button("✏️", key=f"edit_card_{block.id}", use_container_width=True):
+                # Переходим в некомпактный режим с этим блоком
+                st.session_state.ui_state['selected_block_id'] = block.id
+                st.session_state.ui_state['compact_view'] = False
+                st.rerun()
+            with cols[4].popover("⚙️", use_container_width=True):
+                if st.button("🔄 Заменить переменные", key=f"replace_{block.id}", use_container_width=True):
+                    self._apply_variable_replacement(block.id)
+                    st.rerun()
+                if st.button("🔧 Добавить значение", key=f"autofix_{block.id}", use_container_width=True):
+                    self._auto_insert_regular_blocks(block.id)
+                    st.rerun()
+                if st.button("⚖️ Удалить единицы", key=f"remove_{block.id}", use_container_width=True):
+                    units = st.session_state.ui_state.get('selected_units_global', [])
+                    self._apply_unit_removal(block.id, units)
+                    st.rerun()
+                if st.button("🌐 HTML", key=f"html_{block.id}", use_container_width=True):
+                    self._apply_generate_html(block.id)
+                    st.rerun()
+                if st.button("⚡ Удалить спецсимволы", key=f"spec_{block.id}", use_container_width=True):
+                    symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+                    self._apply_special_symbol_removal(block.id, symbols)
+                    st.rerun()
+            st.caption(f"{block.characteristic_name or '-'}: {block.characteristic_value or '-'}")
+            if block.errors:
+                st.caption(f"❌ {len(block.errors)} ошибок")
+
+    def _display_inline_block_editor(self, block: FragmentBlock):
+        st.markdown("---")
+        st.subheader(f"Редактирование: {block.fragment_name}")
+
+        # Информация о блоке (как раньше)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.write(f"**Тип:** {block.block_type}")
+        col2.write(f"**Хар-ка:** {block.characteristic_name or '-'}")
+        col3.write(f"**Значение:** {block.characteristic_value or '-'}")
+        col4.write(f"**Статус:** {block.status}")
+
+        # Ошибки и спецсимволы
+        if block.errors:
+            with st.expander(f"❌ Ошибки ({len(block.errors)})", expanded=False):
+                for e in block.errors:
+                    st.write(f"- {e}")
+        if block.special_symbols:
+            with st.expander(f"⚡ Спецсимволы ({len(block.special_symbols)})", expanded=False):
+                for sym, st_pos, end_pos in block.special_symbols[:20]:
+                    st.write(f"- '{sym}' на {st_pos}-{end_pos}")
+                if len(block.special_symbols) > 20:
+                    st.write(f"... и ещё {len(block.special_symbols) - 20}")
+
+        # Кнопки операций (как раньше)
         col_op1, col_op2, col_op3, col_op4, col_op5 = st.columns(5)
         with col_op1:
             if st.button("🔄 Заменить переменные", key=f"editor_replace_{block.id}", use_container_width=True):
@@ -1698,6 +2140,10 @@ class Phase6Interface:
         st.divider()
 
         # --- РЕДАКТОР ТЕКСТА ---
+        textarea_key = f"inline_editor_text_{block.id}"
+        if textarea_key not in st.session_state:
+            st.session_state[textarea_key] = block.processed_text
+
         edited_text = st.text_area(
             "Текст блока:",
             value=st.session_state[textarea_key],
@@ -1708,147 +2154,49 @@ class Phase6Interface:
         if st.session_state[textarea_key] != edited_text:
             st.session_state[textarea_key] = edited_text
 
-        # --- КНОПКИ СОХРАНЕНИЯ / ОТМЕНЫ ---
-        col_save, col_cancel, col_delete = st.columns(3)
+        # Кнопки сохранения, закрытия, удаления
+        col_save, col_close, col_delete = st.columns(3)
         with col_save:
-            if st.button("💾 Сохранить изменения вручную", type="primary", key=f"save_{block.id}", use_container_width=True):
+            if st.button("💾 Сохранить", type="primary", key=f"inline_save_{block.id}", use_container_width=True):
+                # Сохраняем, обновляем ошибки
                 old_text = block.processed_text
                 block.processed_text = edited_text
                 block.last_modified = datetime.now()
-                # Обновляем ошибки
-                missing = self.text_processor.check_missing_brackets(block.processed_text, block.block_type)
-                block.errors = [e for e in block.errors if "отсутствует значение в квадратных скобках" not in e]
-                if missing:
-                    block.errors.extend(missing)
-                    block.status = 'error'
+                # Проверка regular-блоков по новому методу
+                if block.block_type == 'regular':
+                    errors = self.text_processor.check_regular_brackets(
+                        block.processed_text, block.characteristic_value
+                    )
+                    block.errors = [e for e in block.errors if "значение" not in e]
+                    if errors:
+                        block.errors.extend(errors)
+                        block.status = 'error'
+                    else:
+                        block.status = 'fixed' if not block.errors else block.status
                 else:
-                    block.status = 'fixed' if not block.errors else block.status
-                # Обновляем спецсимволы
+                    # Для non-regular пока оставляем старую логику (или можно добавить проверку)
+                    pass
                 block.special_symbols = self.text_processor._find_special_symbols(block.processed_text)
-                trans = TextTransformation(
-                    block_id=block.id,
-                    fragment_name=block.fragment_name,
-                    transformation_type=TransformationType.MANUAL_CORRECTION,
-                    original=old_text,
-                    result=edited_text,
-                    severity=SeverityLevel.INFO,
-                    user="user"
-                )
+                trans = TextTransformation(...)  # создаём трансформацию
                 st.session_state.transformation_registry.add(trans)
                 st.success("✅ Текст сохранён")
-                time.sleep(0.5)
-                st.session_state.ui_state['editing_mode'] = False
-                st.session_state.ui_state['selected_block_id'] = None
-                if textarea_key in st.session_state:
-                    del st.session_state[textarea_key]
                 st.rerun()
-        with col_cancel:
-            if st.button("🚫 Отмена", key=f"cancel_{block.id}", use_container_width=True):
-                st.session_state.ui_state['editing_mode'] = False
-                st.session_state.ui_state['selected_block_id'] = None
+        with col_close:
+            if st.button("🚫 Закрыть", key=f"inline_close_{block.id}", use_container_width=True):
+                st.session_state.ui_state['editing_block_id'] = None
                 if textarea_key in st.session_state:
                     del st.session_state[textarea_key]
                 st.rerun()
         with col_delete:
-            if st.button("🗑️ Удалить блок", key=f"delete_{block.id}", use_container_width=True):
+            if st.button("🗑️ Удалить", key=f"inline_delete_{block.id}", use_container_width=True):
                 if st.session_state.fragment_manager.delete_block(block.id):
                     st.success("Блок удалён")
-                    st.session_state.ui_state['editing_mode'] = False
-                    st.session_state.ui_state['selected_block_id'] = None
+                    st.session_state.ui_state['editing_block_id'] = None
                     if textarea_key in st.session_state:
                         del st.session_state[textarea_key]
                     st.rerun()
                 else:
                     st.error("Не удалось удалить блок")
-
-    # ------------------------------------------------------------------
-    #                     ПРОБЛЕМЫ И ОШИБКИ
-    # ------------------------------------------------------------------
-    def _display_issues_interface(self):
-        st.header("⚠️ Проблемы и ошибки")
-        fm = st.session_state.fragment_manager
-
-        # Обновляем ошибки и спецсимволы (без автоисправления)
-        for f in fm.fragments:
-            missing = self.text_processor.check_missing_brackets(f.processed_text, f.block_type)
-            f.errors = [e for e in f.errors if "отсутствует значение в квадратных скобках" not in e]
-            if missing:
-                f.errors.extend(missing)
-                f.status = 'error'
-            f.special_symbols = self.text_processor._find_special_symbols(f.processed_text)
-
-        # Собираем все проблемы
-        all_issues = []
-        for f in fm.fragments:
-            for err in f.errors:
-                all_issues.append({
-                    'block_id': f.id,
-                    'fragment_name': f.fragment_name,
-                    'issue_type': 'error',
-                    'message': err,
-                    'block': f
-                })
-            for warn in f.warnings:
-                all_issues.append({
-                    'block_id': f.id,
-                    'fragment_name': f.fragment_name,
-                    'issue_type': 'warning',
-                    'message': warn,
-                    'block': f
-                })
-            for sym, st_pos, end_pos in f.special_symbols:
-                all_issues.append({
-                    'block_id': f.id,
-                    'fragment_name': f.fragment_name,
-                    'issue_type': 'special_symbol',
-                    'message': f"Символ '{sym}' на {st_pos}-{end_pos}",
-                    'block': f,
-                    'symbol': sym
-                })
-
-        if not all_issues:
-            st.success("🎉 Проблем не найдено!")
-            return
-
-        # Кнопка повторной проверки
-        if st.button("🔄 Повторная проверка", key="recheck_issues"):
-            self._check_all_errors()
-            st.rerun()
-
-        col1, col2 = st.columns(2)
-        with col1:
-            issue_filter = st.selectbox("Тип проблемы", ["Все", "error", "warning", "special_symbol"],
-                                        key="issue_type_filter")
-        with col2:
-            frag_filter = st.selectbox("Фрагмент", ["Все"] + sorted(fm.fragment_names), key="issue_frag_filter")
-
-        filtered = all_issues
-        if issue_filter != "Все":
-            filtered = [i for i in filtered if i['issue_type'] == issue_filter]
-        if frag_filter != "Все":
-            filtered = [i for i in filtered if i['fragment_name'] == frag_filter]
-
-        st.write(f"Найдено проблем: {len(filtered)}")
-
-        # Группировка по блокам для удобства
-        issues_by_block = defaultdict(list)
-        for issue in filtered:
-            issues_by_block[issue['block_id']].append(issue)
-
-        for block_id, issues in issues_by_block.items():
-            block = next((b for b in fm.fragments if b.id == block_id), None)
-            if not block:
-                continue
-            with st.container(border=True):
-                st.write(f"**{block.fragment_name}** (ID: {block_id[:8]})")
-                for issue in issues:
-                    icon = "❌" if issue['issue_type'] == 'error' else "⚠️" if issue['issue_type'] == 'warning' else "⚡"
-                    st.write(f"{icon} {issue['message']}")
-                if st.button("✏️ Исправить", key=f"fix_block_{block_id}", use_container_width=True):
-                    st.session_state.ui_state['selected_block_id'] = block_id
-                    st.session_state.ui_state['editing_mode'] = True
-                    st.session_state.ui_state['active_tab'] = "🏷️ Фрагменты"  # переключение вкладки
-                    st.rerun()
 
     # ------------------------------------------------------------------
     #                     ИСТОРИЯ ТРАНСФОРМАЦИЙ

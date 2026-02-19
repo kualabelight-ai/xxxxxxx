@@ -845,7 +845,7 @@ def main():
 
         global_prompts = st.number_input(
             "Промптов на значение (по умолчанию):",
-            min_value=1,
+            min_value=0,
             max_value=200,
             value=st.session_state.phase4_global_prompts,
             help="Будет применено ко всем характеристикам, если не настроено индивидуально"
@@ -993,7 +993,7 @@ def show_generation_mode(phase1_data, category, markers):
         with col_global2:
             global_prompts = st.number_input(
                 "Промптов на значение:",
-                min_value=1,
+                min_value=0,
                 max_value=200,
                 value=st.session_state.get('phase4_global_prompts', 3),
                 key="global_prompts_input",
@@ -1053,7 +1053,7 @@ def show_generation_mode(phase1_data, category, markers):
                 # Индивидуальная настройка количества промптов
                 prompts_per_value = st.number_input(
                     "Промптов:",
-                    min_value=1,
+                    min_value=0,
                     max_value=200,
                     value=current_prompts,
                     key=f"prompts_{char_id}",
@@ -1145,7 +1145,7 @@ def show_generation_mode(phase1_data, category, markers):
                 with col2:
                     prompts_count = st.number_input(
                         "Промптов:",
-                        min_value=1,
+                        min_value=0,
                         max_value=200,
                         value=block_settings.get('prompts_count', 3),
                         key=f"other_count_{block_id}",

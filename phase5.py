@@ -378,6 +378,32 @@ class Phase5DataManager:
                             f.write(result['ai_response'])
                             f.write("\n\n" + "=" * 50 + "\n\n")
 
+        elif format == 'excel':
+            filename = f"phase5_results_{timestamp}.xlsx"
+
+            rows = []
+            for prompt_id, result in st.session_state.phase5['results'].items():
+                prompt = self.get_prompt_by_id(prompt_id)
+                if prompt:
+                    row = {
+                        'ID': prompt_id,
+                        'Тип': prompt.get('type', prompt.get('block_type', 'unknown')),
+                        'Характеристика/Блок': prompt.get('characteristic_name', prompt.get('block_name', '')),
+                        'Значение': prompt.get('value', ''),
+                        'Номер промпта': prompt.get('prompt_num', 1),
+                        'Промпт': prompt.get('prompt', ''),
+                        'Статус': result.get('status', ''),
+                        'Сгенерированный текст': result.get('edited_text') or result.get('ai_response', ''),
+                        'Модель': result.get('model', ''),
+                        'Провайдер': result.get('provider', ''),
+                        'Токены': result.get('tokens_used', 0),
+                        'Время генерации': result.get('generated_at', ''),
+                        'Ошибка': result.get('error_message', ''),
+                    }
+                    rows.append(row)
+
+            df = pd.DataFrame(rows)
+            df.to_excel(filename, index=False, engine='openpyxl')
             return filename
 
         return None
@@ -1004,54 +1030,34 @@ class Phase5UIComponents:
                 # Меняем текущую фазу в основном приложении
                 st.session_state.current_phase = 6
                 st.rerun()
+
     @staticmethod
     def show_results(data_manager: Phase5DataManager):
-        """Показать результаты генерации"""
         st.header("📊 Результаты генерации")
-
         results = st.session_state.phase5['results']
         stats = st.session_state.phase5['statistics']
-
         if stats['completed'] == 0:
             st.info("Результаты генерации появятся здесь после запуска генерации.")
             return
 
-        # Фильтры для результатов
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            result_filter = st.selectbox(
-                "Фильтр по статусу:",
-                ["Все", "Успешно", "Ошибки"],
-                key="result_filter_phase5"
-            )
-
+            result_filter = st.selectbox("Фильтр по статусу:", ["Все", "Успешно", "Ошибки"], key="result_filter_phase5")
         with col_f2:
-            # Группировка результатов
-            group_by = st.selectbox(
-                "Группировать по:",
-                ["Нет", "Характеристике", "Типу", "Статусу"],
-                key="result_group_by_phase5"
-            )
+            group_by = st.selectbox("Группировать по:", ["Нет", "Характеристике", "Типу", "Статусу"],
+                                    key="result_group_by_phase5")
 
-        # Применяем фильтры
         filtered_results = []
         for prompt_id, result in results.items():
             if not result.get('ai_response') and result.get('status') == 'pending':
                 continue
-
             if result_filter == "Успешно" and result.get('status') != 'success':
                 continue
             elif result_filter == "Ошибки" and result.get('status') != 'error':
                 continue
-
             prompt = data_manager.get_prompt_by_id(prompt_id)
-            filtered_results.append({
-                'prompt_id': prompt_id,
-                'result': result,
-                'prompt': prompt
-            })
+            filtered_results.append({'prompt_id': prompt_id, 'result': result, 'prompt': prompt})
 
-        # Группируем если нужно
         if group_by != "Нет":
             groups = {}
             for item in filtered_results:
@@ -1061,20 +1067,15 @@ class Phase5UIComponents:
                     key = item['prompt'].get('type', item['prompt'].get('block_type', 'unknown'))
                 elif group_by == "Статусу":
                     key = item['result'].get('status', 'unknown')
+                groups.setdefault(key, []).append(item)
 
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(item)
-
-            # Показываем по группам
             for group_name, group_items in groups.items():
                 with st.expander(f"{group_name} ({len(group_items)} результатов)", expanded=False):
                     Phase5UIComponents._show_results_table(group_items, data_manager)
         else:
             Phase5UIComponents._show_results_table(filtered_results, data_manager)
 
-        # Экспорт результатов
-        Phase5UIComponents._show_export_options(data_manager)
+        # ВЫЗОВ УДАЛЁН: Phase5UIComponents._show_export_options(data_manager)
 
     @staticmethod
     def _show_results_table(results_items, data_manager):
@@ -1168,7 +1169,7 @@ class Phase5UIComponents:
         with col1:
             export_format = st.selectbox(
                 "Формат экспорта:",
-                ["json", "txt"],  # Убрал docx пока что
+                ["json", "txt", "excel"],  # ← добавлено "excel"
                 key="export_format_select_phase5"
             )
 
@@ -1208,6 +1209,17 @@ class Phase5UIComponents:
                                 mime="text/plain",
                                 key="download_txt_phase5"
                             )
+                        elif export_format == 'excel':  # ← новый блок
+                            with open(filename, 'rb') as f:
+                                data = f.read()
+                            st.download_button(
+                                label="Скачать Excel",
+                                data=data,
+                                file_name=filename,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="download_excel_phase5"
+                            )
+
                     else:
                         st.error("Ошибка при экспорте")
 
@@ -1235,21 +1247,7 @@ def main():
 
     st.title("🚀 Фаза 5: Генерация текстовых блоков")
     st.markdown("---")
-    st.markdown("⚡ Быстрая навигация")
 
-    nav_options = [
-        "Выбор промптов",
-        "Настройки генерации",
-        "Управление генерацией",
-        "Результаты",
-        "Экспорт"
-    ]
-
-    current_section = st.selectbox(
-        "Перейти к разделу:",
-        nav_options,
-        key="phase5_nav_select_main"
-    )
     # Загрузка промптов из фазы 4 (только если еще не загружены)
     if not st.session_state.phase5_prompts:
         with st.spinner("Загрузка промптов из фазы 4..."):
@@ -1260,6 +1258,42 @@ def main():
         st.session_state.phase5_prompts_by_id = {
             p.get('phase5_id'): p for p in st.session_state.phase5_prompts
         }
+
+    st.markdown("⚡ Быстрая навигация")
+
+    # Создаём вкладки вместо выпадающего списка
+    nav_options = [
+        "Выбор промптов",
+        "Настройки генерации",
+        "Управление генерацией",
+        "Результаты",
+        "Экспорт"
+    ]
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(nav_options)
+
+    with tab1:
+        ui.show_prompts_selection(data_manager)
+
+    with tab2:
+        ui.show_generation_settings()
+
+    with tab3:
+        ui.show_generation_control(generation_manager, data_manager)
+
+    with tab4:
+        ui.show_results(data_manager)
+
+    with tab5:
+        # Раздел экспорта
+        st.header("💾 Экспорт результатов")
+        if st.session_state.phase5['statistics']['completed'] == 0:
+            st.info("Нет данных для экспорта. Сначала сгенерируйте тексты.")
+        else:
+            Phase5UIComponents._show_export_options(data_manager)
+
+    # Боковая панель (оставляем без изменений)
+
 
     # Боковая панель с улучшенным отображением статуса
     with st.sidebar:
@@ -1355,31 +1389,7 @@ def main():
             st.rerun()
 
     # Основной контент
-    if current_section == "Выбор промптов":
-        ui.show_prompts_selection(data_manager)
-
-    elif current_section == "Настройки генерации":
-        ui.show_generation_settings()
-
-    elif current_section == "Управление генерацией":
-        ui.show_generation_control(generation_manager, data_manager)
-
-    elif current_section == "Результаты":
-        ui.show_results(data_manager)
-
-    elif current_section == "Экспорт":
-        # Показываем только опции экспорта
-        st.header("💾 Экспорт результатов")
-
-        if st.session_state.phase5['statistics']['completed'] == 0:
-            st.info("Нет данных для экспорта. Сначала сгенерируйте тексты.")
-        else:
-            Phase5UIComponents._show_export_options(data_manager)
-
-    # Показать статистику внизу с обновлением
     st.markdown("---")
-
-    # Обновляем статистику перед отображением
     data_manager._update_statistics()
     stats = st.session_state.phase5['statistics']
 
@@ -1394,17 +1404,15 @@ def main():
         st.metric("Ошибки", stats['error'])
     with col5:
         st.metric("Ожидают", stats['pending'])
-    # Где-то в main() после отображения результатов:
+
+    # Переход к фазе 6
     st.markdown("---")
     st.header("🚀 Переход к фазе 6")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        # Проверяем, можно ли переходить
-        stats = st.session_state.phase5['statistics']
         can_proceed = stats['selected'] > 0 and stats['completed'] == stats['selected']
-
         status_text = "✅ Готово к переходу" if can_proceed else "⏳ Завершите генерацию"
         st.write(f"**Статус:** {status_text}")
 
@@ -1421,28 +1429,24 @@ def main():
                      type="primary",
                      disabled=not (can_proceed and 'phase5' in st.session_state.get('app_data', {})),
                      key="goto_phase6_btn"):
-
-            # Проверяем, что данные сохранены
             if 'phase5' not in st.session_state.get('app_data', {}):
                 st.warning("Сначала сохраните данные кнопкой выше!")
             else:
-                # Меняем фазу
                 st.session_state.current_phase = 6
                 st.rerun()
-    stats = st.session_state.phase5['statistics']
+
+    # Автоматическое сохранение для фазы 6 (если есть результаты)
     if stats['completed'] > 0:
-        # Автоматически сохраняем данные для фазы 6
         if 'app_data' not in st.session_state:
             st.session_state.app_data = {}
-
-        # Сохраняем результаты в формате, понятном для фазы 6
         st.session_state.app_data['phase5'] = {
-            'results': list(st.session_state.phase5['results'].values()),  # Это САМОЕ ВАЖНОЕ
+            'results': list(st.session_state.phase5['results'].values()),
             'statistics': st.session_state.phase5['statistics'],
             'generation_settings': st.session_state.phase5['generation_settings'],
             'phase_completed': True,
             'completed_at': datetime.now().isoformat(),
             'prompts_count': len(st.session_state.phase5_prompts)
+
         }
 
 if __name__ == "__main__":

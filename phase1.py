@@ -701,8 +701,16 @@ def main():
 
                 # 1) Название + ID/приоритет/единица
                 with cols[0]:
+                    # Формируем метки: для дубликатов и для дополнительных
+                    label_parts = [f"**{display_name}**"]
+                    if char['is_duplicate']:
+                        label_parts.append("🔄")
+                    if char['is_extra']:
+                        label_parts.append("➕")  # или " [Доп]" / "⭐" / любой другой символ
+                    label = " ".join(label_parts)
+
                     is_active = st.checkbox(
-                        f"**{display_name}**" + (" 🔄" if char['is_duplicate'] else ""),
+                        label,
                         value=not char['is_extra'],
                         key=f"act_{char_id}"
                     )
