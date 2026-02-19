@@ -351,22 +351,30 @@ class EnhancedTextProcessor:
             "опишите:", "сформулируйте:", "составьте:", "подготовьте:"
         ]
 
+    def _get_numeric_variants(self, value: str) -> List[str]:
+        """Если value похоже на число с плавающей точкой, возвращает варианты с точкой и запятой."""
+        if re.match(r'^\d+[.,]\d+$', value):
+            if '.' in value:
+                other = value.replace('.', ',')
+            else:
+                other = value.replace(',', '.')
+            return [value, other]
+        return [value]
+
     def check_regular_brackets(self, text: str, expected_value: str) -> List[Dict]:
         if not expected_value:
             return []
-        pattern = r'\[' + re.escape(expected_value) + r'\]'
-        if re.search(pattern, text):
-            return []
+        variants = self._get_numeric_variants(expected_value)
+        for val in variants:
+            pattern = r'\[' + re.escape(val) + r'\]'
+            if re.search(pattern, text):
+                return []
         if self.pattern.search(text):
-            return [{
-                'type': ErrorType.WRONG_BRACKET.value,
-                'message': f"В regular-блоке ожидается значение [{expected_value}], но найдены другие скобки"
-            }]
+            return [{'type': ErrorType.WRONG_BRACKET.value,
+                     'message': f"В regular-блоке ожидается значение [{expected_value}], но найдены другие скобки"}]
         else:
-            return [{
-                'type': ErrorType.MISSING_BRACKET.value,
-                'message': f"В regular-блоке отсутствует значение [{expected_value}]"
-            }]
+            return [{'type': ErrorType.MISSING_BRACKET.value,
+                     'message': f"В regular-блоке отсутствует значение [{expected_value}]"}]
     # --------------------------------------------------------------
     #  ЗАМЕНА ПЕРЕМЕННЫХ (ТОЛЬКО ЗАМЕНА, БЕЗ АВТОДОБАВЛЕНИЯ)
     # --------------------------------------------------------------
@@ -430,6 +438,9 @@ class EnhancedTextProcessor:
             'special_symbols': special_symbols
         }
 
+    def normalize_text(self, text: str) -> str:
+        """Замена ё на е."""
+        return text.replace('ё', 'е').replace('Ё', 'Е')
     # --------------------------------------------------------------
     #  АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ СКОБОК (ТОЛЬКО ДЛЯ REGULAR)
     # --------------------------------------------------------------
@@ -437,38 +448,25 @@ class EnhancedTextProcessor:
     #  АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ СКОБОК (ТОЛЬКО ДЛЯ REGULAR)
     # --------------------------------------------------------------
     def auto_insert_bracket(self, text: str, char_value: str) -> Tuple[str, bool, Optional[str]]:
-        """
-        Умное добавление скобок для regular-блоков:
-        1. Ищет в тексте вхождение characteristic_value (без учёта регистра) и оборачивает первое найденное в квадратные скобки.
-        2. Если значение не найдено, добавляет [char_value] в конец текста.
-        Возвращает (новый_текст, был_ли_добавлен/изменён, найденное_значение_или_None).
-        """
         if not char_value:
             return text, False, None
-
-        # Если уже есть скобки — ничего не делаем
         if self.pattern.search(text):
             return text, False, None
 
-        # Экранируем спецсимволы в значении для регулярного выражения
-        escaped_value = re.escape(char_value)
-        # Ищем полное совпадение слова/фразы (границы слов)
-        pattern = r'\b' + escaped_value + r'\b'
-        match = re.search(pattern, text, re.IGNORECASE)
+        variants = self._get_numeric_variants(char_value)
+        for val in variants:
+            escaped = re.escape(val)
+            pattern = r'\b' + escaped + r'\b'
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                start, end = match.span()
+                new_text = text[:start] + '[' + text[start:end] + ']' + text[end:]
+                return new_text, True, text[start:end]
 
-        if match:
-            # Нашли значение, оборачиваем его в скобки
-            start, end = match.span()
-            # Важно: не заменять, если уже внутри скобок? Но мы уже проверили, что скобок нет.
-            new_text = text[:start] + '[' + text[start:end] + ']' + text[end:]
-            return new_text, True, text[start:end]
-        else:
-            # Не нашли — добавляем в конец
-            if text and not text.endswith(' '):
-                text += ' '
-            added_text = f"[{char_value}]"
-            new_text = text + added_text
-            return new_text, True, char_value
+        if text and not text.endswith(' '):
+            text += ' '
+        added_text = f"[{char_value}]"
+        return text + added_text, True, char_value
 
     # --------------------------------------------------------------
     #  ПРОВЕРКА ОТСУТСТВИЯ СКОБОК (ДЛЯ REGULAR)
@@ -482,7 +480,16 @@ class EnhancedTextProcessor:
         removed = []
         cleaned = text
         for unit in units_list:
-            pattern = r'\b' + re.escape(unit) + r'\b'
+            # Если единица короткая (<=2 символов) или содержит не только буквы, ищем точно
+            if len(unit) <= 2 or not re.match(r'^[а-яё]+$', unit, re.IGNORECASE):
+                pattern = r'\b' + re.escape(unit.lower()) + r'\b'
+            else:
+                # Строим регулярку: основа + возможные окончания
+                endings = ['', 'а', 'у', 'ом', 'е', 'ы', 'ов', 'ам', 'ами', 'ах']
+                base = re.escape(unit.lower())
+                endings_pattern = '(?:' + '|'.join(re.escape(e) for e in endings) + ')'
+                pattern = r'\b' + base + endings_pattern + r'\b'
+            # Ищем все вхождения и удаляем
             for m in reversed(list(re.finditer(pattern, cleaned, re.IGNORECASE))):
                 cleaned = cleaned[:m.start()] + cleaned[m.end():]
                 removed.append(unit)
@@ -814,12 +821,12 @@ class Phase6Interface:
 
                 frag_name = self._generate_fragment_name(result)
                 original = result.get('edited_text', '')
-
+                normalized_original = self.text_processor.normalize_text(original)
                 block_data = {
                     'id': result.get('prompt_id', str(uuid.uuid4())),
                     'fragment_name': frag_name,
-                    'original_text': original,
-                    'processed_text': original,
+                    'original_text': normalized_original,
+                    'processed_text': normalized_original,
                     'html_text': '',
                     'block_type': result.get('type', 'unknown'),
                     'characteristic_name': result.get('characteristic_name'),
@@ -831,6 +838,7 @@ class Phase6Interface:
                     'status': 'pending',
                     'auto_corrected': False,
                     'added_value': None
+
                 }
                 fm.add_block(block_data)
 
@@ -957,6 +965,7 @@ class Phase6Interface:
 
             old_text = block.processed_text
             block.processed_text = result['processed_text']
+            block.processed_text = self.text_processor.normalize_text(block.processed_text)
             block.special_symbols = result['special_symbols']
             # Добавляем новые ошибки
             for err in result['errors']:
@@ -1012,7 +1021,7 @@ class Phase6Interface:
 
         if errors_occurred:
             st.error("❌ При замене возникли ошибки. Проверьте вкладку 'Проблемы'.")
-
+        st.rerun()
     def _auto_insert_regular_blocks(self, block_id: str = None):
         """Автоматически оборачивает найденное значение в [] в regular-блоках без скобок."""
         fm = st.session_state.fragment_manager
@@ -1029,6 +1038,7 @@ class Phase6Interface:
             )
             if added:
                 block.processed_text = new_text
+                block.processed_text = self.text_processor.normalize_text(block.processed_text)
                 block.last_modified = datetime.now()
                 block.auto_corrected = True
                 block.added_value = found_value
@@ -1049,6 +1059,7 @@ class Phase6Interface:
             st.success(f"✅ Добавлены/обёрнуты значения в {inserted} regular-блоков")
         else:
             st.info("Нет regular-блоков, требующих добавления значения")
+        st.rerun()
 
     def _apply_unit_removal(self, block_id: str = None, units_to_remove: List[str] = None):
         if not units_to_remove:
@@ -1066,6 +1077,7 @@ class Phase6Interface:
             cleaned, removed = self.text_processor.remove_units(block.processed_text, units_to_remove)
             if removed:
                 block.processed_text = cleaned
+                block.processed_text = self.text_processor.normalize_text(block.processed_text)
                 block.last_modified = datetime.now()
                 trans = TextTransformation(
                     block_id=block.id,
@@ -1087,6 +1099,7 @@ class Phase6Interface:
             st.dataframe(df, use_container_width=True)
         else:
             st.info("Единицы для удаления не найдены в текстах.")
+        st.rerun()
 
     def _apply_special_symbol_removal(self, block_id: str = None, symbols_to_remove: List[str] = None):
         if not symbols_to_remove:
@@ -1106,6 +1119,7 @@ class Phase6Interface:
             )
             if removed:
                 block.processed_text = cleaned
+                block.processed_text = self.text_processor.normalize_text(block.processed_text)
                 block.special_symbols = new_specials
                 block.last_modified = datetime.now()
                 trans = TextTransformation(
@@ -1128,6 +1142,7 @@ class Phase6Interface:
             st.dataframe(df, use_container_width=True)
         else:
             st.info("Выбранные символы не найдены в текстах.")
+        st.rerun()
 
     def _apply_generate_html(self, block_id: str = None):
         fm = st.session_state.fragment_manager
@@ -1140,6 +1155,11 @@ class Phase6Interface:
             html = self.text_processor.convert_to_html(block.processed_text)
             block.html_text = html
             block.last_modified = datetime.now()
+            block.html_generated = True
+
+            # --- НОВОЕ: обновляем session_state для этого блока ---
+            st.session_state[f"edit_html_{block.id}"] = html
+
             trans = TextTransformation(
                 block_id=block.id,
                 fragment_name=block.fragment_name,
@@ -1151,12 +1171,11 @@ class Phase6Interface:
             )
             registry.add(trans)
             generated += 1
-            block.html_generated = True
 
         st.success(f"🌐 HTML сгенерирован для {generated} блоков")
-
         if generated == 1 and block_id:
             st.markdown(blocks[0].html_text, unsafe_allow_html=True)
+        st.rerun()
 
     def _check_all_errors(self):
         """Полная проверка ошибок во всех блоках, полностью пересчитывая список ошибок."""
@@ -1231,6 +1250,7 @@ class Phase6Interface:
             st.error(f"❌ Найдено {errors_found} ошибок. Проверьте детали в блоках.")
         else:
             st.success("✅ Ошибок не найдено")
+        st.rerun()
 
     # ------------------------------------------------------------------
     #                     СБРОС СОСТОЯНИЯ
@@ -1610,57 +1630,68 @@ class Phase6Interface:
             text_key = f"edit_text_{block.id}"
             if text_key not in st.session_state:
                 st.session_state[text_key] = block.processed_text
-
             edited_text = st.text_area(
-                "Текст блока",
+                "Текст блока (с переменными)",
                 value=st.session_state[text_key],
-                height=150,
+                height=100,
                 key=text_key,
                 label_visibility="collapsed"
             )
-            # st.text_area автоматически обновляет session_state, дополнительных действий не нужно
+
+            # --- НОВОЕ: поле для HTML ---
+            html_key = f"edit_html_{block.id}"
+            if html_key not in st.session_state:
+                st.session_state[html_key] = block.html_text
+
+            # Можно сделать expander, чтобы скрыть громоздкий HTML
+            with st.expander("🌐 HTML версия (редактируемая)", expanded=False):
+                edited_html = st.text_area(
+                    "HTML код",
+                    value=st.session_state[html_key],
+                    height=150,
+                    key=html_key,
+                    label_visibility="collapsed"
+                )
+                # Кнопка предпросмотра HTML (необязательно)
+                if st.button("👁️ Предпросмотр", key=f"preview_html_{block.id}"):
+                    st.markdown("**Рендер:**")
+                    st.markdown(edited_html, unsafe_allow_html=True)
 
             # Кнопки действий
             col_save, col_ops, col_delete = st.columns([1, 2, 1])
             with col_save:
                 if st.button("💾 Сохранить", key=f"save_{block.id}", use_container_width=True):
-                    # Сохраняем изменения
+                    # Сохраняем оба поля
                     old_text = block.processed_text
-                    block.processed_text = edited_text
+                    old_html = block.html_text
+                    block.processed_text = st.session_state[text_key]
+                    block.html_text = st.session_state[html_key]
                     block.last_modified = datetime.now()
                     block.manually_fixed = True
-                    self._check_all_errors()
-                    # Проверка ошибок (для regular-блоков)
-                    if block.block_type == 'regular':
-                        errors = self.text_processor.check_regular_brackets(
-                            block.processed_text, block.characteristic_value
-                        )
-                        # Убираем старые ошибки о скобках и добавляем новые
-                        block.errors = [e for e in block.errors if "скобках" not in e]
-                        if errors:
-                            block.errors.extend(errors)
-                            block.status = 'error'
-                        else:
-                            block.status = 'fixed' if not block.errors else block.status
-                    else:
-                        # Для non-regular можно добавить проверку на неизвестные переменные при желании
-                        pass
 
-                    block.special_symbols = self.text_processor._find_special_symbols(block.processed_text)
+                    # Нормализация текста (ё -> е)
+                    normalized = self.text_processor.normalize_text(block.processed_text)
+                    if normalized != block.processed_text:
+                        block.processed_text = normalized
+                        st.info("Текст нормализован: ё заменена на е.")
 
-                    # Регистрируем трансформацию
+                    # Проверка ошибок (для regular-блоков) и обновление статуса
+                    self._check_all_errors()  # или пересчитать ошибки для этого блока
+
+                    # Регистрация трансформации
                     trans = TextTransformation(
                         block_id=block.id,
                         fragment_name=block.fragment_name,
                         transformation_type=TransformationType.MANUAL_CORRECTION,
                         original=old_text,
-                        result=edited_text,
+                        result=block.processed_text,
                         severity=SeverityLevel.INFO,
-                        user="user"
+                        user="user",
+                        meta={'html_changed': old_html != block.html_text}
                     )
                     st.session_state.transformation_registry.add(trans)
 
-                    st.success("✅ Текст сохранён")
+                    st.success("✅ Текст и HTML сохранены")
                     st.rerun()
 
             with col_ops:
@@ -1699,6 +1730,8 @@ class Phase6Interface:
                         st.rerun()
                     else:
                         st.error("Не удалось удалить блок")
+
+
 
             st.markdown("</div>", unsafe_allow_html=True)
 
