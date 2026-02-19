@@ -397,8 +397,7 @@ class EnhancedTextProcessor:
                         found = True
                         break
                 if not found:
-                    # Если не нашли, всё равно заменяем на {system ...}, но добавляем ошибку
-                    replacement = f"{{system {var_name}}}"
+                    replacement = match.group()  # оставляем как есть, например "[var_name]"
                     errors.append(f"Неизвестная переменная '{var_name}' в non-regular блоке")
 
             new_start = start + offset
@@ -1739,26 +1738,21 @@ class Phase6Interface:
 
         # --- Кнопки операций ---
         st.subheader("🛠️ Операции над текстом")
-        col_op1, col_op2, col_op3, col_op4, col_op5 = st.columns(5)
-        with col_op1:
-            if st.button("🔄 Заменить переменные", key=f"nav_replace_{block.id}", use_container_width=True):
+        with st.popover("⚙️", use_container_width=True):
+            if st.button("🔄 Заменить переменные", key=f"pop_replace_{block.id}", use_container_width=True):
                 self._apply_variable_replacement(block.id)
                 st.rerun()
-        with col_op2:
-            if st.button("🔧 Добавить значение", key=f"nav_autofix_{block.id}", use_container_width=True):
+            if st.button("🔧 Добавить значение", key=f"pop_autofix_{block.id}", use_container_width=True):
                 self._auto_insert_regular_blocks(block.id)
                 st.rerun()
-        with col_op3:
-            if st.button("⚖️ Удалить единицы", key=f"nav_remove_{block.id}", use_container_width=True):
+            if st.button("⚖️ Удалить единицы", key=f"pop_remove_{block.id}", use_container_width=True):
                 units = st.session_state.ui_state.get('selected_units_global', [])
                 self._apply_unit_removal(block.id, units)
                 st.rerun()
-        with col_op4:
-            if st.button("🌐 HTML", key=f"nav_html_{block.id}", use_container_width=True):
+            if st.button("🌐 HTML", key=f"pop_html_{block.id}", use_container_width=True):
                 self._apply_generate_html(block.id)
                 st.rerun()
-        with col_op5:
-            if st.button("⚡ Удалить спецсимволы", key=f"nav_spec_{block.id}", use_container_width=True):
+            if st.button("⚡ Удалить спецсимволы", key=f"pop_spec_{block.id}", use_container_width=True):
                 symbols = st.session_state.ui_state.get('selected_symbols_global', [])
                 self._apply_special_symbol_removal(block.id, symbols)
                 st.rerun()
@@ -1994,26 +1988,21 @@ class Phase6Interface:
                     st.write(f"... и ещё {len(block.special_symbols) - 20}")
 
         # Кнопки операций (как раньше)
-        col_op1, col_op2, col_op3, col_op4, col_op5 = st.columns(5)
-        with col_op1:
-            if st.button("🔄 Заменить переменные", key=f"editor_replace_{block.id}", use_container_width=True):
+        with st.popover("⚙️", use_container_width=True):
+            if st.button("🔄 Заменить переменные", key=f"pop_replace_{block.id}", use_container_width=True):
                 self._apply_variable_replacement(block.id)
                 st.rerun()
-        with col_op2:
-            if st.button("🔧 Добавить значение", key=f"editor_autofix_{block.id}", use_container_width=True):
+            if st.button("🔧 Добавить значение", key=f"pop_autofix_{block.id}", use_container_width=True):
                 self._auto_insert_regular_blocks(block.id)
                 st.rerun()
-        with col_op3:
-            if st.button("⚖️ Удалить единицы", key=f"editor_remove_{block.id}", use_container_width=True):
+            if st.button("⚖️ Удалить единицы", key=f"pop_remove_{block.id}", use_container_width=True):
                 units = st.session_state.ui_state.get('selected_units_global', [])
                 self._apply_unit_removal(block.id, units)
                 st.rerun()
-        with col_op4:
-            if st.button("🌐 HTML", key=f"editor_html_{block.id}", use_container_width=True):
+            if st.button("🌐 HTML", key=f"pop_html_{block.id}", use_container_width=True):
                 self._apply_generate_html(block.id)
                 st.rerun()
-        with col_op5:
-            if st.button("⚡ Удалить спецсимволы", key=f"editor_spec_{block.id}", use_container_width=True):
+            if st.button("⚡ Удалить спецсимволы", key=f"pop_spec_{block.id}", use_container_width=True):
                 symbols = st.session_state.ui_state.get('selected_symbols_global', [])
                 self._apply_special_symbol_removal(block.id, symbols)
                 st.rerun()
