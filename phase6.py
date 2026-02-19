@@ -544,8 +544,17 @@ class EnhancedTextProcessor:
     def find_units_in_text(self, text: str) -> List[str]:
         found = set()
         text_lower = text.lower()
+        # Окончания для существительных (мужской род, множественное число и т.п.)
+        endings = ['', 'а', 'у', 'ом', 'е', 'ы', 'ов', 'ам', 'ами', 'ах']
         for unit in self.units_to_remove:
-            pattern = r'\b' + re.escape(unit.lower()) + r'\b'
+            # Если единица короткая (<=2 символов) или содержит не только буквы, ищем точно
+            if len(unit) <= 2 or not re.match(r'^[а-яё]+$', unit, re.IGNORECASE):
+                pattern = r'\b' + re.escape(unit.lower()) + r'\b'
+            else:
+                # Строим регулярку: основа + возможные окончания
+                base = re.escape(unit.lower())
+                endings_pattern = '(?:' + '|'.join(re.escape(e) for e in endings) + ')'
+                pattern = r'\b' + base + endings_pattern + r'\b'
             if re.search(pattern, text_lower):
                 found.add(unit)
         return sorted(found)
@@ -589,6 +598,87 @@ class ExportManager:
                     'Предупреждения': '; '.join(f.warnings)
                 })
             pd.DataFrame(elements).to_excel(writer, sheet_name='Элементы фрагментов', index=False)
+        output.seek(0)
+        return output
+
+    @staticmethod
+    def export_verification_json(fragment_manager: FragmentManager, phase5_data: Dict) -> str:
+        fm = fragment_manager
+        prompts = phase5_data.get('prompts', {})
+        results = phase5_data.get('results', [])
+        original_by_id = {r.get('prompt_id'): r.get('edited_text', '') for r in results}
+
+        blocks_info = []
+        for block in fm.fragments:
+            info = {
+                'block_id': block.id,
+                'fragment_name': block.fragment_name,
+                'block_type': block.block_type,
+                'original_text': original_by_id.get(block.id, block.original_text),
+                'processed_text': block.processed_text,
+                'html_text': block.html_text,
+                'characteristic_name': block.characteristic_name,
+                'characteristic_value': block.characteristic_value,
+                'errors': block.errors,
+                'warnings': block.warnings,
+                'special_symbols': block.special_symbols,
+                'status': block.status,
+                'auto_corrected': block.auto_corrected,
+                'added_value': block.added_value,
+                'prompt_id': block.id,
+            }
+            prompt_text = prompts.get(block.id)
+            if prompt_text:
+                info['prompt_text'] = prompt_text
+            blocks_info.append(info)
+
+        export_data = {
+            'timestamp': datetime.now().isoformat(),
+            'category': fm.category,
+            'blocks': blocks_info,
+            'phase5_meta': {
+                'total_results': len(results),
+                'prompts_count': len(prompts)
+            }
+        }
+        return json.dumps(export_data, ensure_ascii=False, indent=2, default=str)
+
+    @staticmethod
+    def export_verification_excel(fragment_manager: FragmentManager, phase5_data: Dict) -> BytesIO:
+        fm = fragment_manager
+        prompts = phase5_data.get('prompts', {})
+        results = phase5_data.get('results', [])
+        original_by_id = {r.get('prompt_id'): r.get('edited_text', '') for r in results}
+
+        data = []
+        for block in fm.fragments:
+            data.append({
+                'ID блока': block.id,
+                'Фрагмент': block.fragment_name,
+                'Тип': block.block_type,
+                'Исходный текст (фаза 5)': original_by_id.get(block.id, block.original_text),
+                'Обработанный текст': block.processed_text,
+                'HTML': block.html_text,
+                'Характеристика': block.characteristic_name,
+                'Значение': block.characteristic_value,
+                'Ошибки': '; '.join(block.errors),
+                'Предупреждения': '; '.join(block.warnings),
+                'Статус': block.status,
+                'Автоисправлено': block.auto_corrected,
+                'Добавленное значение': block.added_value,
+                'Текст промпта': prompts.get(block.id, ''),
+            })
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            pd.DataFrame(data).to_excel(writer, sheet_name='Блоки', index=False)
+            # Добавим лист с промптами, если есть
+            if prompts:
+                prompts_df = pd.DataFrame([
+                    {'prompt_id': pid, 'prompt_text': ptext}
+                    for pid, ptext in prompts.items()
+                ])
+                prompts_df.to_excel(writer, sheet_name='Промпты', index=False)
         output.seek(0)
         return output
 
@@ -740,48 +830,7 @@ class Phase6Interface:
             all_units.update(units_in_text)
         return sorted(all_units)
 
-    def _manage_units(self):
-        with st.sidebar.expander("⚖️ Единицы измерения", expanded=False):
-            st.write("### Все доступные единицы")
-            st.write("Список по умолчанию + пользовательские:")
-            for unit in st.session_state.units_manager['units']:
-                st.write(f"- {unit}")
 
-            st.divider()
-            st.write("### Найденные в текстах единицы")
-            found = st.session_state.get('found_units', [])
-            if found:
-                selected = st.multiselect(
-                    "Выберите единицы для удаления:",
-                    found,
-                    default=st.session_state.ui_state.get('selected_units_global', []),
-                    key="selected_units_global_widget"
-                )
-                st.session_state.ui_state['selected_units_global'] = selected
-            else:
-                st.info("В текстах не найдено стандартных единиц измерения.")
-                st.session_state.ui_state['selected_units_global'] = []
-
-            st.divider()
-            new_unit = st.text_input("Добавить свою единицу:")
-            if st.button("➕ Добавить", use_container_width=True):
-                if new_unit and new_unit not in st.session_state.units_manager['units']:
-                    st.session_state.units_manager['units'].append(new_unit)
-                    self.text_processor.add_unit_to_remove(new_unit)
-                    st.session_state.found_units = self._scan_units_in_texts()
-                    st.rerun()
-
-            if st.button("🔄 Сбросить к настройкам по умолчанию", use_container_width=True):
-                default_units = [
-                    "мм", "метр", "м", "см", "дм", "км", "миллиметр", "сантиметр", "дециметр", "километр",
-                    "кг", "г", "мг", "тонна", "т", "грамм", "миллиграмм", "килограмм",
-                    "л", "мл", "литр", "миллилитр", "шт", "штук", "штука", "штуки",
-                    "кг/м", "г/см³", "г/см3", "кг/м³", "кг/м3", "°C", "°F", "град", "градус", "градусов"
-                ]
-                st.session_state.units_manager['units'] = default_units
-                self.text_processor.units_to_remove = default_units.copy()
-                st.session_state.found_units = self._scan_units_in_texts()
-                st.rerun()
 
     # ------------------------------------------------------------------
     #                     УПРАВЛЕНИЕ СПЕЦСИМВОЛАМИ
@@ -795,23 +844,55 @@ class Phase6Interface:
                 all_symbols.add(sym)
         return sorted(all_symbols)
 
-    def _manage_special_symbols(self):
-        with st.sidebar.expander("⚡ Специальные символы", expanded=False):
-            st.write("### Найденные в текстах спецсимволы")
-            found = st.session_state.get('found_special_symbols', [])
-            if found:
-                selected = st.multiselect(
+    def _manage_units_and_symbols(self):
+        with st.sidebar.expander("⚙️ Единицы и спецсимволы", expanded=False):
+            st.write("### 📏 Единицы измерения, найденные в текстах")
+            found_units = st.session_state.get('found_units', [])
+            if found_units:
+                selected_units = st.multiselect(
+                    "Выберите единицы для удаления:",
+                    found_units,
+                    default=st.session_state.ui_state.get('selected_units_global', []),
+                    key="selected_units_global_widget"
+                )
+                st.session_state.ui_state['selected_units_global'] = selected_units
+            else:
+                st.info("В текстах не найдено стандартных единиц измерения.")
+                st.session_state.ui_state['selected_units_global'] = []
+
+            st.divider()
+            new_unit = st.text_input("Добавить свою единицу:")
+            if st.button("➕ Добавить единицу", use_container_width=True):
+                if new_unit and new_unit not in st.session_state.units_manager['units']:
+                    st.session_state.units_manager['units'].append(new_unit)
+                    self.text_processor.add_unit_to_remove(new_unit)
+                    st.session_state.found_units = self._scan_units_in_texts()
+                    st.rerun()
+
+            st.divider()
+            st.write("### ⚡ Специальные символы, найденные в текстах")
+            found_symbols = st.session_state.get('found_special_symbols', [])
+            if found_symbols:
+                selected_symbols = st.multiselect(
                     "Выберите символы для удаления:",
-                    found,
+                    found_symbols,
                     default=st.session_state.ui_state.get('selected_symbols_global', []),
                     key="selected_symbols_global_widget"
                 )
-                st.session_state.ui_state['selected_symbols_global'] = selected
-                if st.button("🗑️ Удалить выбранные символы из ВСЕХ блоков", use_container_width=True):
-                    self._apply_special_symbol_removal(symbols_to_remove=selected)
-                    st.rerun()
+                st.session_state.ui_state['selected_symbols_global'] = selected_symbols
             else:
                 st.info("Специальные символы не найдены.")
+                st.session_state.ui_state['selected_symbols_global'] = []
+
+            st.divider()
+            if st.button("🗑️ Удалить выбранные единицы и символы из ВСЕХ блоков", use_container_width=True):
+                units = st.session_state.ui_state.get('selected_units_global', [])
+                symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+                if units:
+                    self._apply_unit_removal(units_to_remove=units)
+                if symbols:
+                    self._apply_special_symbol_removal(symbols_to_remove=symbols)
+                st.rerun()
 
     # ------------------------------------------------------------------
     #                     ОПЕРАЦИИ НАД БЛОКАМИ (ИНДИВИДУАЛЬНЫЕ И ОБЩИЕ)
@@ -1143,16 +1224,22 @@ class Phase6Interface:
         st.session_state.found_units = self._scan_units_in_texts()
         st.session_state.found_special_symbols = self._scan_special_symbols_in_texts()
 
-        self._manage_units()
-        self._manage_special_symbols()
+        self._manage_units_and_symbols()
         self._add_reset_button()  # Кнопка сброса состояния
 
         # Общие кнопки для массовых операций
         with st.container():
             st.subheader("🛠️ Массовые операции")
+            final_confirm = st.checkbox(
+                "⚠️ Подтверждаю, что это финальная замена переменных (рекомендуется после всех исправлений)",
+                key="final_confirm"
+            )
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
-                if st.button("🔄 Заменить переменные во всех блоках", use_container_width=True):
+                if st.button("🔄 Заменить переменные во всех блоках", disabled=not final_confirm,
+                             use_container_width=True):
+                    st.warning(
+                        "Вы выполняете финальную замену переменных. Убедитесь, что все остальные правки завершены.")
                     self._apply_variable_replacement()
             with col2:
                 if st.button("⚖️ Удалить выбранные единицы из всех блоков", use_container_width=True):
@@ -1170,25 +1257,30 @@ class Phase6Interface:
 
         st.markdown("---")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📤 Экспорт отчета",
-            "🏷️ Фрагменты",
-            "⚠️ Проблемы",
-            "📋 История замен",
-            "🧩 Шаблоны и HTML"
-        ])
+        tab_options = ["📤 Экспорт отчета", "🏷️ Фрагменты", "⚠️ Проблемы", "📋 История замен", "🧩 Шаблоны и HTML"]
+        default_tab = st.session_state.ui_state.get('active_tab', tab_options[0])
+        if default_tab not in tab_options:
+            default_tab = tab_options[0]
+        active_tab = st.radio(
+            "Выберите вкладку",
+            tab_options,
+            horizontal=True,
+            label_visibility="collapsed",
+            index=tab_options.index(default_tab),
+            key="main_tabs"
+        )
+        st.session_state.ui_state['active_tab'] = active_tab
 
-        with tab1:
+        if active_tab == tab_options[0]:
             self._display_export_interface()
-        with tab2:
+        elif active_tab == tab_options[1]:
             self._display_fragments_interface()
-        with tab3:
+        elif active_tab == tab_options[2]:
             self._display_issues_interface()
-        with tab4:
+        elif active_tab == tab_options[3]:
             self._display_transformations_interface()
-        with tab5:
+        elif active_tab == tab_options[4]:
             self._display_templates_interface()
-
     # ------------------------------------------------------------------
     #                     ЭКСПОРТ
     # ------------------------------------------------------------------
@@ -1198,7 +1290,34 @@ class Phase6Interface:
         if not fm.fragments:
             st.info("Нет данных для экспорта")
             return
+        st.divider()
+        st.subheader("🔍 Экспорт для проверки (входные данные фазы 5 + текущее состояние)")
 
+        phase5_data = st.session_state.app_data.get('phase5', {})
+        if not phase5_data:
+            st.warning("Данные фазы 5 отсутствуют, экспорт будет неполным.")
+
+        col_json, col_xlsx = st.columns(2)
+        with col_json:
+            if st.button("📥 JSON (проверка)", use_container_width=True):
+                json_data = ExportManager.export_verification_json(fm, phase5_data)
+                st.download_button(
+                    "⬇️ Сохранить JSON",
+                    data=json_data,
+                    file_name=f"проверка_{fm.category}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+        with col_xlsx:
+            if st.button("📥 Excel (проверка)", use_container_width=True):
+                excel_data = ExportManager.export_verification_excel(fm, phase5_data)
+                st.download_button(
+                    "⬇️ Сохранить Excel",
+                    data=excel_data,
+                    file_name=f"проверка_{fm.category}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
         fmt = st.radio("Формат:", ["XLSX (Excel)", "JSON"], horizontal=True)
         use_html = st.checkbox("Использовать HTML версию", value=st.session_state.ui_state.get('show_html', False))
         st.session_state.ui_state['show_html'] = use_html
@@ -1728,6 +1847,7 @@ class Phase6Interface:
                 if st.button("✏️ Исправить", key=f"fix_block_{block_id}", use_container_width=True):
                     st.session_state.ui_state['selected_block_id'] = block_id
                     st.session_state.ui_state['editing_mode'] = True
+                    st.session_state.ui_state['active_tab'] = "🏷️ Фрагменты"  # переключение вкладки
                     st.rerun()
 
     # ------------------------------------------------------------------

@@ -290,7 +290,7 @@ class PromptGenerator:
                 context["характеристика_маркер"] = marker
 
             # Генерируем промпт с правильным типом блока
-            prompt = self.generate_single_prompt(block, context, char_type=None)
+            prompt, unresolved = self.generate_single_prompt(block, context, char_type=None)
 
             if prompt:
                 prompts.append({
@@ -299,6 +299,7 @@ class PromptGenerator:
                     "block_type": block.get("block_type", "other"),
                     "prompt_num": prompt_num + 1,
                     "prompt": prompt,
+                    "unresolved_variables": unresolved,  # добавлено
                     "context": context
                 })
 
@@ -522,7 +523,7 @@ class PromptGenerator:
                     context["характеристика_маркер"] = marker
 
                 # Генерируем промпт
-                prompt = self.generate_single_prompt(block, context, char_type)
+                prompt, unresolved = self.generate_single_prompt(block, context, char_type)
 
                 if prompt:
                     prompts.append({
@@ -532,6 +533,7 @@ class PromptGenerator:
                         "prompt_num": prompt_num + 1,
                         "type": char_type,
                         "prompt": prompt,
+                        "unresolved_variables": unresolved,  # добавлено
                         "context": context,
                         "feature_id": feature_id
                     })
@@ -612,7 +614,8 @@ class PromptGenerator:
         return ""
 
     def generate_single_prompt(self, block, context, char_type=None):
-        """Генерирует один промпт с поддержкой AI-переменных"""
+        """Генерирует один промпт с поддержкой AI-переменных.
+           Возвращает кортеж (prompt, unresolved_vars)"""
 
         # Отладка: логируем контекст
         if st.session_state.get('debug_ai', False):
@@ -630,7 +633,6 @@ class PromptGenerator:
                 if var_data and var_data.get("type") == "ai":
                     # Это AI-переменная
                     if block_type == "other":
-                        # Для блоков "other" используем упрощенный контекст
                         block_context = {
                             "категория": context.get("категория", ""),
                             "тип": "other",
@@ -638,7 +640,6 @@ class PromptGenerator:
                             "var_name": var_name
                         }
                     else:
-                        # Для characteristic блоков используем полный контекст
                         block_context = context
 
                     ai_value = self.get_weighted_ai_value(block["block_id"], var_name, block_context)
@@ -668,7 +669,6 @@ class PromptGenerator:
         else:
             template = template.replace("{скобки_характеристика}", "")
 
-        # 5. Обрабатываем остальные статические переменные с взвешенным выбором
         # 5. Обрабатываем остальные статические переменные с адаптивным выбором
         for var_name in block.get("variables", []):
             # Пропускаем уже обработанные
@@ -684,7 +684,6 @@ class PromptGenerator:
                     continue
                 else:
                     # Для всех типов переменных используем адаптивный выбор с контекстом
-                    # Создаем упрощенный контекст для переменной
                     var_context = {
                         "категория": context.get("категория", ""),
                         "характеристика": context.get("характеристика", ""),
@@ -693,24 +692,7 @@ class PromptGenerator:
                         "block_id": block["block_id"],
                         "var_name": var_name
                     }
-
                     var_value = self.get_adaptive_static_value(block["block_id"], var_name, var_context)
-
-                # Если переменная содержит плейсхолдеры, заменяем их
-                if var_value and isinstance(var_value, str):
-                    # Подставляем маркер если есть в контексте
-                    if "{характеристика_маркер}" in var_value and "характеристика_маркер" in context:
-                        var_value = var_value.replace("{характеристика_маркер}", context["характеристика_маркер"])
-                    if "{маркер}" in var_value and "маркер" in context:
-                        var_value = var_value.replace("{маркер}", context["маркер"])
-
-                    # Подставляем другие переменные из контекста
-                    for key, val in context.items():
-                        placeholder_key = f"{{{key}}}"
-                        if placeholder_key in var_value:
-                            var_value = var_value.replace(placeholder_key, str(val))
-
-                template = template.replace(placeholder, var_value)
 
                 # Если переменная содержит плейсхолдеры, заменяем их
                 if var_value and isinstance(var_value, str):
@@ -737,7 +719,10 @@ class PromptGenerator:
         # 7. Очищаем результат
         template = re.sub(r'\n{3,}', '\n\n', template.strip())
 
-        return template
+        # 8. Поиск необработанных плейсхолдеров (добавлено)
+        unresolved = re.findall(r'\{([^}]+)\}', template)
+
+        return template, unresolved
 
 
 # --- Основное приложение фазы 4 ---
@@ -861,7 +846,7 @@ def main():
         global_prompts = st.number_input(
             "Промптов на значение (по умолчанию):",
             min_value=1,
-            max_value=20,
+            max_value=200,
             value=st.session_state.phase4_global_prompts,
             help="Будет применено ко всем характеристикам, если не настроено индивидуально"
         )
@@ -1009,7 +994,7 @@ def show_generation_mode(phase1_data, category, markers):
             global_prompts = st.number_input(
                 "Промптов на значение:",
                 min_value=1,
-                max_value=20,
+                max_value=200,
                 value=st.session_state.get('phase4_global_prompts', 3),
                 key="global_prompts_input",
                 label_visibility="collapsed"
@@ -1069,7 +1054,7 @@ def show_generation_mode(phase1_data, category, markers):
                 prompts_per_value = st.number_input(
                     "Промптов:",
                     min_value=1,
-                    max_value=20,
+                    max_value=200,
                     value=current_prompts,
                     key=f"prompts_{char_id}",
                     label_visibility="collapsed"
@@ -1161,7 +1146,7 @@ def show_generation_mode(phase1_data, category, markers):
                     prompts_count = st.number_input(
                         "Промптов:",
                         min_value=1,
-                        max_value=20,
+                        max_value=200,
                         value=block_settings.get('prompts_count', 3),
                         key=f"other_count_{block_id}",
                         label_visibility="collapsed"
@@ -1573,6 +1558,7 @@ def show_generation_mode(phase1_data, category, markers):
                 st.rerun()
 
         # Показываем промпты для текущей страницы
+        # Показываем промпты для текущей страницы
         start_idx = st.session_state.phase4_page * items_per_page
         end_idx = min(start_idx + items_per_page, len(filtered_prompts))
 
@@ -1586,6 +1572,55 @@ def show_generation_mode(phase1_data, category, markers):
             with st.expander(f"Промпт #{start_idx + i + 1}: {title}", expanded=False):
                 st.markdown(prompt_data['prompt'], unsafe_allow_html=False)
 
+                # ОТОБРАЖЕНИЕ НЕОБРАБОТАННЫХ ПЕРЕМЕННЫХ (добавлено)
+                unresolved = prompt_data.get('unresolved_variables', [])
+                if unresolved:
+                    st.warning(f"⚠️ **Необработанные переменные:** {', '.join(unresolved)}")
+
+                    # Для каждой необработанной переменной пытаемся найти доступные значения
+                    for var_name in unresolved:
+                        # Определяем block_id (может быть в разных ключах)
+                        block_id = prompt_data.get('block_id') or prompt_data.get('characteristic_id')
+                        if block_id:
+                            # Получаем данные переменной из VariableManager
+                            var_data = st.session_state.variable_manager.get_variable_data(block_id, var_name)
+                            if var_data and var_data.get('values'):
+                                # Собираем все возможные значения
+                                values_list = []
+                                for item in var_data['values']:
+                                    if isinstance(item, str):
+                                        values_list.append(item)
+                                    elif isinstance(item, dict) and 'value' in item:
+                                        values_list.append(item['value'])
+
+                                if values_list:
+                                    st.info(
+                                        f"🔍 Для переменной **{var_name}** доступны значения: {', '.join(values_list[:5])}" +
+                                        (f" и ещё {len(values_list) - 5}" if len(values_list) > 5 else ""))
+                                else:
+                                    st.error(f"❌ Переменная **{var_name}** определена, но не содержит значений.")
+                            else:
+                                # Проверим, может быть это переменная блока, а не характеристики
+                                # Пробуем найти в текущем блоке
+                                current_block_id = prompt_data.get('block_id')
+                                if current_block_id:
+                                    var_data = st.session_state.variable_manager.get_variable_data(current_block_id,
+                                                                                                   var_name)
+                                    if var_data and var_data.get('values'):
+                                        values_list = []
+                                        for item in var_data['values']:
+                                            if isinstance(item, str):
+                                                values_list.append(item)
+                                            elif isinstance(item, dict) and 'value' in item:
+                                                values_list.append(item['value'])
+                                        st.info(
+                                            f"🔍 Для переменной **{var_name}** доступны значения: {', '.join(values_list[:5])}")
+                                    else:
+                                        st.error(f"❌ Переменная **{var_name}** не найдена в блоке {current_block_id}.")
+                        else:
+                            st.error(f"❌ Не удалось определить блок для переменной {var_name}.")
+
+                # Остальная информация о промпте (как и было)
                 if 'characteristic_name' in prompt_data:
                     col_info1, col_info2, col_info3 = st.columns(3)
                     with col_info1:
