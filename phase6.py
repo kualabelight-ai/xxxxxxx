@@ -444,10 +444,6 @@ class EnhancedTextProcessor:
                         break
                 if not found:
                     replacement = match.group()
-                    errors.append({
-                        'type': ErrorType.UNKNOWN_VARIABLE.value,
-                        'message': f"Неизвестная переменная '{var_name}' в non-regular блоке"
-                    })
 
             new_start = start + offset
             new_end = end + offset
@@ -562,34 +558,141 @@ class EnhancedTextProcessor:
         lines = text.split('\n')
         html_lines = []
         in_list = False
+        list_type = None  # 'ul' или 'ol'
+
         for line in lines:
             line = line.rstrip()
+
             if not line:
                 if in_list:
-                    html_lines.append('</ul>')
+                    html_lines.append(f'</{list_type}>')
                     in_list = False
+                    list_type = None
                 continue
+
+
+            # ===== INLINE LIST INSIDE <p> =====
+            p_match = re.match(r'<p>(.*?)</p>', line, re.IGNORECASE | re.DOTALL)
+            if p_match:
+                content = p_match.group(1)
+
+                # 1. Нормализация тире
+                content = content.replace('–', '-').replace('—', '-')
+
+                # 2. Нормализация пробелов
+                content = re.sub(r'\s+', ' ', content).strip()
+
+                # 3. Разбиваем по дефису с пробелами
+                dash_items = re.split(r'\s-\s+', content)
+
+                # если дефисов два и более (т.е. длина > 2), делаем список
+                if len(dash_items) >= 3:
+                    intro = dash_items[0].strip()
+                    items = [i.strip() for i in dash_items[1:] if i.strip()]
+
+                    if intro:
+                        html_lines.append(f'<p>{intro}</p>')
+
+                    html_lines.append('<ul>')
+                    for item in items:
+                        html_lines.append(f'<li>{item}</li>')
+                    html_lines.append('</ul>')
+                else:
+                    # один дефис — оставляем как есть
+                    html_lines.append(line)
+
+                continue
+            # ===== END INLINE LIST =====
+            # Если строка уже содержит HTML-тег (начинается с <), оставляем как есть
+            if line.lstrip().startswith('<') and re.match(r'<\/?[a-z][a-z0-9]*\s*>', line.lstrip(), re.IGNORECASE):
+                header_match = re.match(r'(<h[1-6][^>]*>.*?</h[1-6]>)(.*)', line, re.IGNORECASE)
+                if header_match:
+                    if in_list:
+                        html_lines.append(f'</{list_type}>')
+                        in_list = False
+                        list_type = None
+
+                    header_part = header_match.group(1).strip()
+                    rest_part = header_match.group(2).strip()
+
+                    html_lines.append(header_part)
+
+                    if rest_part:
+                        # если есть inline-список
+                        if '*' in rest_part:
+                            before_list = re.split(r'\s*\*\s*', rest_part)
+                            html_lines.append(f'<p>{before_list[0].strip()}</p>')
+                            html_lines.append('<ul>')
+                            for item in before_list[1:]:
+                                if item.strip():
+                                    html_lines.append(f'<li>{item.strip()}</li>')
+                            html_lines.append('</ul>')
+                        else:
+                            html_lines.append(f'<p>{rest_part}</p>')
+                    continue
+
+            # Заголовки
             if line.startswith('### '):
+                if in_list:
+                    html_lines.append(f'</{list_type}>')
+                    in_list = False
+                    list_type = None
                 html_lines.append(f'<h3>{line[4:]}</h3>')
             elif line.startswith('## '):
+                if in_list:
+                    html_lines.append(f'</{list_type}>')
+                    in_list = False
+                    list_type = None
                 html_lines.append(f'<h2>{line[3:]}</h2>')
             elif line.startswith('# '):
+                if in_list:
+                    html_lines.append(f'</{list_type}>')
+                    in_list = False
+                    list_type = None
                 html_lines.append(f'<h1>{line[2:]}</h1>')
-            elif line.startswith('- ') or line.startswith('* ') or re.match(r'^\d+\.', line):
-                if not in_list:
-                    html_lines.append('<ul>')
+
+            # Нумерованный список: цифра с точкой
+            elif re.match(r'^(\d+\.)\s+', line):
+                if in_list and list_type != 'ol':
+                    html_lines.append(f'</{list_type}>')
                     in_list = True
-                content = re.sub(r'^[-*\d.]+\s*', '', line)
+                    list_type = 'ol'
+                    html_lines.append('<ol>')
+                elif not in_list:
+                    in_list = True
+                    list_type = 'ol'
+                    html_lines.append('<ol>')
+                content = re.sub(r'^\d+\.\s*', '', line)
                 html_lines.append(f'<li>{content}</li>')
+
+            # Маркированный список: —, -, *
+            elif re.match(r'^[—\-*]\s+', line):
+                if in_list and list_type != 'ul':
+                    html_lines.append(f'</{list_type}>')
+                    in_list = True
+                    list_type = 'ul'
+                    html_lines.append('<ul>')
+                elif not in_list:
+                    in_list = True
+                    list_type = 'ul'
+                    html_lines.append('<ul>')
+                content = re.sub(r'^[—\-*]\s*', '', line)
+                html_lines.append(f'<li>{content}</li>')
+
+            # Обычный текст (может содержать inline-разметку)
             else:
                 if in_list:
-                    html_lines.append('</ul>')
+                    html_lines.append(f'</{list_type}>')
                     in_list = False
+                    list_type = None
+                # Обработка жирного и курсивного текста
                 line = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', line)
                 line = re.sub(r'\*(.+?)\*', r'<em>\1</em>', line)
                 html_lines.append(f'<p>{line}</p>')
+
+        # Закрываем список, если он остался открытым
         if in_list:
-            html_lines.append('</ul>')
+            html_lines.append(f'</{list_type}>')
         return '\n'.join(html_lines)
 
     # --------------------------------------------------------------
@@ -656,7 +759,7 @@ class ExportManager:
                     'Характеристика': f.characteristic_name or '',
                     'Значение': f.characteristic_value or '',
                     'Статус': f.status,
-                    'Ошибки': '; '.join(f.errors),
+                    'Ошибки': '; '.join([err.get('message', str(err)) for err in f.errors]),
                     'Предупреждения': '; '.join(f.warnings)
                 })
             pd.DataFrame(elements).to_excel(writer, sheet_name='Элементы фрагментов', index=False)
@@ -723,7 +826,7 @@ class ExportManager:
                 'HTML': block.html_text,
                 'Характеристика': block.characteristic_name,
                 'Значение': block.characteristic_value,
-                'Ошибки': '; '.join(block.errors),
+                'Ошибки': '; '.join([err.get('message', str(err)) for err in block.errors]),
                 'Предупреждения': '; '.join(block.warnings),
                 'Статус': block.status,
                 'Автоисправлено': block.auto_corrected,
@@ -936,6 +1039,8 @@ class Phase6Interface:
             new_text = self.text_processor.fix_punctuation(new_text)
 
             # 4. Проверки
+            block.errors.clear()
+
             new_errors = []
             if block.block_type == 'regular':
                 if not re.search(r'\{prop\s+[^}]+\}', new_text):
@@ -1491,10 +1596,8 @@ class Phase6Interface:
             with col1:
                 if st.button("🔧 Автоисправить regular-блоки", use_container_width=True):
                     self._auto_insert_regular_blocks()
+
             with col2:
-                if st.button("🔍 Проверить ошибки во всех блоках", use_container_width=True):
-                    self._check_all_errors()
-            with col3:
                 final_confirm = st.checkbox(
                     "⚠️ Я готов к финальной замене переменных",
                     key="final_confirm_stage1"
@@ -1855,24 +1958,54 @@ class Phase6Interface:
             col_save, col_ops, col_delete = st.columns([1, 2, 1])
             with col_save:
                 if st.button("💾 Сохранить", key=f"save_{block.id}", use_container_width=True):
-                    # Сохраняем оба поля
                     old_text = block.processed_text
                     old_html = block.html_text
                     block.processed_text = st.session_state[text_key]
                     block.html_text = st.session_state[html_key]
                     block.last_modified = datetime.now()
                     block.manually_fixed = True
+                    # Пересчитываем ошибки для этого блока
+                    new_errors = []
+                    if block.block_type == 'regular':
+                        # Проверка regular-блоков: ожидаемое значение в квадратных скобках
+                        bracket_errors = self.text_processor.check_regular_brackets(block.processed_text,
+                                                                                    block.characteristic_value)
+                        new_errors.extend(bracket_errors)
+                    else:
+                        # Проверка non-regular блоков на неизвестные переменные
+                        matches = self.text_processor.pattern.finditer(block.processed_text)
+                        for match in matches:
+                            var_name = match.group(1).strip()
+                            var_lower = var_name.lower()
+                            found = any(sys_var.lower() == var_lower for sys_var in self.vm.system_vars.keys())
+                            if not found:
+                                new_errors.append({
+                                    'type': ErrorType.UNKNOWN_VARIABLE.value,
+                                    'message': f"Неизвестная переменная '{var_name}' в non-regular блоке"
+                                })
 
+                    # Проверка на спецсимволы (можно оставить как предупреждение или ошибку)
+                    specials = self.text_processor._find_special_symbols(block.processed_text)
+                    if specials:
+                        sym_list = ', '.join(set(s[0] for s in specials))
+                        new_errors.append({
+                            'type': ErrorType.SPECIAL_SYMBOL.value,
+                            'message': f"Найдены специальные символы: {sym_list}"
+                        })
+
+                    block.errors = new_errors
+                    block.status = 'fixed' if not new_errors else 'error'
                     # Нормализация текста (ё -> е)
                     normalized = self.text_processor.normalize_text(block.processed_text)
                     if normalized != block.processed_text:
                         block.processed_text = normalized
                         st.info("Текст нормализован: ё заменена на е.")
 
-                    # Проверка ошибок (для regular-блоков) и обновление статуса
-                    self._check_all_errors()  # или пересчитать ошибки для этого блока
+                    # Больше НЕ вызываем _check_all_errors()
+                    # Просто сбрасываем статус (ошибки будут видны после постобработки)
+                    block.status = 'pending'  # или 'fixed', если хотите отметить как исправленное
 
-                    # Регистрация трансформации
+                    # Регистрируем трансформацию
                     trans = TextTransformation(
                         block_id=block.id,
                         fragment_name=block.fragment_name,
