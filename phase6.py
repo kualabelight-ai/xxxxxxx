@@ -17,7 +17,10 @@ class ErrorType(Enum):
     WRONG_BRACKET = "wrong_bracket"          # найдены другие скобки вместо ожидаемого значения
     UNKNOWN_VARIABLE = "unknown_variable"    # неизвестная переменная в non-regular блоке
     SPECIAL_SYMBOL = "special_symbol"        # нежелательный спецсимвол (можно использовать как предупреждение)
-    GENERIC = "generic"                       # общая ошибка
+    GENERIC = "generic"
+    MISSING_VARIABLE = "missing_variable"  # отсутствует {prop ...} в regular
+    UNWANTED_BRACKETS = "unwanted_brackets"
+    # общая ошибка
 class TransformationType(Enum):
     VARIABLE_REPLACE = "variable_replace"
     UNIT_REMOVED = "unit_removed"
@@ -27,6 +30,7 @@ class TransformationType(Enum):
     ERROR = "error"
     MANUAL_CORRECTION = "manual_correction"
     HTML_GENERATION = "html_generation"
+    POSTPROCESSING = "postprocessing"
 
 
 class SeverityLevel(Enum):
@@ -350,7 +354,33 @@ class EnhancedTextProcessor:
             "instruction:", "prompt:", "write:", "create:", "generate:",
             "опишите:", "сформулируйте:", "составьте:", "подготовьте:"
         ]
+    def fix_punctuation(self, text: str) -> str:
+        """Исправляет типичные пунктуационные ошибки."""
+        if not text:
+            return text
 
+        # удаляем лишние пробелы (больше одного)
+        text = re.sub(r' {2,}', ' ', text)
+
+        # пробел перед запятой – удаляем
+        text = re.sub(r'\s+,', ',', text)
+
+        # после запятой ставим пробел, если его нет (но не в числах, например 1,5)
+        # используем просмотр вперёд, чтобы не испортить десятичные разделители
+        # проще: заменяем ", " на корректное, а если запятая идёт сразу за буквой без пробела – добавляем пробел
+        # реализуем через отрицание цифр
+        text = re.sub(r',(?!\s)(?=\S)', ', ', text)
+
+        # двойные точки и больше – заменяем на одну
+        text = re.sub(r'\.{2,}', '.', text)
+
+        # длинные тире на обычный дефис
+        text = text.replace('—', '-').replace('–', '-')
+
+        # убираем пробелы в начале и конце
+        text = text.strip()
+
+        return text
     def _get_numeric_variants(self, value: str) -> List[str]:
         """Если value похоже на число с плавающей точкой, возвращает варианты с точкой и запятой."""
         if re.match(r'^\d+[.,]\d+$', value):
@@ -764,6 +794,21 @@ class Phase6Interface:
                 if key not in st.session_state.ui_state:
                     st.session_state.ui_state[key] = value
 
+    def _display_postprocessing_results(self):
+        results = st.session_state.get('postprocessing_results', {})
+        if not results:
+            return
+        with st.expander("📊 Результаты последней постобработки", expanded=True):
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Блоков обработано", results.get('total_processed', 0))
+            col2.metric("Удалено единиц", results.get('total_units_removed', 0))
+            col3.metric("Удалено символов", results.get('total_symbols_removed', 0))
+            col4.metric("Новых ошибок", results.get('total_errors', 0))
+
+            if results.get('details'):
+                st.write("#### Детали по блокам")
+                df = pd.DataFrame(results['details'])
+                st.dataframe(df, use_container_width=True)
     def _migrate_fragments(self):
         fm = st.session_state.fragment_manager
         for frag in fm.fragments:
@@ -847,6 +892,130 @@ class Phase6Interface:
             st.error(f"Ошибка загрузки: {str(e)}")
             return False
 
+    def _apply_postprocessing(self, block_id: str = None):
+        fm = st.session_state.fragment_manager
+        registry = st.session_state.transformation_registry
+        blocks = [next((b for b in fm.fragments if b.id == block_id), None)] if block_id else fm.fragments
+        blocks = [b for b in blocks if b is not None]
+
+        units = st.session_state.ui_state.get('selected_units_global', [])
+        symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+
+        processed_count = 0
+        total_units_removed = 0
+        total_symbols_removed = 0
+        total_errors = 0
+        details = []
+
+        for block in blocks:
+            old_text = block.processed_text
+            new_text = old_text
+            meta = {}
+            block_units_removed = []
+            block_symbols_removed = []
+
+            # 1. Удаление единиц
+            if units:
+                new_text, removed_units = self.text_processor.remove_units(new_text, units)
+                if removed_units:
+                    block.units_removed = list(set(block.units_removed + removed_units))
+                    block_units_removed = list(set(removed_units))
+                    meta['units_removed'] = block_units_removed
+                    total_units_removed += len(block_units_removed)
+
+            # 2. Удаление спецсимволов
+            if symbols:
+                new_text, removed_symbols, _ = self.text_processor.remove_special_symbols(new_text, symbols)
+                if removed_symbols:
+                    block.symbols_removed = list(set(block.symbols_removed + removed_symbols))
+                    block_symbols_removed = list(set(removed_symbols))
+                    meta['symbols_removed'] = block_symbols_removed
+                    total_symbols_removed += len(block_symbols_removed)
+
+            # 3. Исправление пунктуации
+            new_text = self.text_processor.fix_punctuation(new_text)
+
+            # 4. Проверки
+            new_errors = []
+            if block.block_type == 'regular':
+                if not re.search(r'\{prop\s+[^}]+\}', new_text):
+                    new_errors.append({
+                        'type': ErrorType.MISSING_VARIABLE.value,
+                        'message': "В regular-блоке отсутствует переменная {prop ...} после постобработки"
+                    })
+            else:
+                if '[' in new_text or ']' in new_text:
+                    new_errors.append({
+                        'type': ErrorType.UNWANTED_BRACKETS.value,
+                        'message': "В non-regular блоке остались квадратные скобки"
+                    })
+
+            # Обновляем блок
+            block.processed_text = new_text
+            block.last_modified = datetime.now()
+            block.errors.extend(new_errors)
+            if new_errors:
+                block.status = 'error'
+                total_errors += len(new_errors)
+                for err in new_errors:
+                    trans = TextTransformation(
+                        block_id=block.id,
+                        fragment_name=block.fragment_name,
+                        transformation_type=TransformationType.ERROR,
+                        original="",
+                        result="",
+                        meta={'message': err['message'], 'error_type': err['type']},
+                        severity=SeverityLevel.ERROR,
+                        user="system"
+                    )
+                    registry.add(trans)
+            else:
+                if block.manually_fixed:
+                    block.status = 'fixed'
+                else:
+                    block.status = 'processed'
+
+            # Обновляем сессионное поле для текста
+            st.session_state[f"edit_text_{block.id}"] = new_text
+
+            # Регистрируем операцию постобработки
+            trans = TextTransformation(
+                block_id=block.id,
+                fragment_name=block.fragment_name,
+                transformation_type=TransformationType.POSTPROCESSING,
+                original=old_text,
+                result=new_text,
+                meta=meta,
+                severity=SeverityLevel.INFO if not new_errors else SeverityLevel.WARNING,
+                user="system"
+            )
+            registry.add(trans)
+            processed_count += 1
+
+            # Детали для отчёта
+            details.append({
+                'Фрагмент': block.fragment_name,
+                'ID блока': block.id[:8],
+                'Удалено единиц': ', '.join(block_units_removed) if block_units_removed else '-',
+                'Удалено символов': ', '.join(block_symbols_removed) if block_symbols_removed else '-',
+                'Новых ошибок': len(new_errors),
+                'Статус после': block.status
+            })
+
+        # Сохраняем результаты в session_state
+        st.session_state.postprocessing_results = {
+            'total_processed': processed_count,
+            'total_units_removed': total_units_removed,
+            'total_symbols_removed': total_symbols_removed,
+            'total_errors': total_errors,
+            'details': details
+        }
+
+        if processed_count:
+            st.success(f"✅ Постобработка выполнена для {processed_count} блоков")
+        else:
+            st.warning("Нет блоков для обработки")
+        st.rerun()
     def _generate_fragment_name(self, result: Dict) -> str:
         bt = result.get('type', '')
         cn = result.get('characteristic_name', '')
@@ -1016,6 +1185,9 @@ class Phase6Interface:
             st.success("✅ Переменные заменены")
             df = pd.DataFrame(all_replacements)
             st.dataframe(df, use_container_width=True)
+            # Устанавливаем флаг, только если это была массовая замена (block_id is None)
+            if block_id is None:
+                st.session_state.variables_replaced = True
         else:
             st.info("Нет замен для выполнения")
 
@@ -1309,32 +1481,54 @@ class Phase6Interface:
           # Кнопка сброса состояния
 
         # Общие кнопки для массовых операций
+        if 'variables_replaced' not in st.session_state:
+            st.session_state.variables_replaced = False
+
+        # ---------- Этап 1: Первичная обработка ----------
         with st.container():
-            st.subheader("🛠️ Массовые операции")
-            final_confirm = st.checkbox(
-                "⚠️ Подтверждаю, что это финальная замена переменных (рекомендуется после всех исправлений)",
-                key="final_confirm"
-            )
-            col1, col2, col3, col4, col5 = st.columns(5)
+            st.subheader("🛠️ Этап 1: Первичная обработка")
+            col1, col2, col3 = st.columns(3)
             with col1:
-                if st.button("🔄 Заменить переменные во всех блоках", disabled=not final_confirm,
-                             use_container_width=True):
-                    st.warning(
-                        "Вы выполняете финальную замену переменных. Убедитесь, что все остальные правки завершены.")
-                    self._apply_variable_replacement()
-            with col2:
-                if st.button("⚖️ Удалить выбранные единицы из всех блоков", use_container_width=True):
-                    units = st.session_state.ui_state.get('selected_units_global', [])
-                    self._apply_unit_removal(units_to_remove=units)
-            with col3:
-                if st.button("🌐 Сгенерировать HTML для всех блоков", use_container_width=True):
-                    self._apply_generate_html()
-            with col4:
-                if st.button("🔍 Проверить ошибки во всех блоках", use_container_width=True):
-                    self._check_all_errors()
-            with col5:
                 if st.button("🔧 Автоисправить regular-блоки", use_container_width=True):
                     self._auto_insert_regular_blocks()
+            with col2:
+                if st.button("🔍 Проверить ошибки во всех блоках", use_container_width=True):
+                    self._check_all_errors()
+            with col3:
+                final_confirm = st.checkbox(
+                    "⚠️ Я готов к финальной замене переменных",
+                    key="final_confirm_stage1"
+                )
+                if st.button("🔄 Заменить переменные во всех блоках",
+                             disabled=not final_confirm,
+                             use_container_width=True):
+                    st.warning("Выполняется замена переменных...")
+                    self._apply_variable_replacement()
+                    st.session_state.variables_replaced = True
+                    st.rerun()
+
+        st.markdown("---")
+
+                # Этап 2: Постобработка (появляется после замены переменных)
+        if st.session_state.variables_replaced:
+            with st.container():
+                st.subheader("🛠️ Этап 2: Постобработка и генерация HTML")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("🌐 Сгенерировать HTML для всех блоков", use_container_width=True):
+                        self._apply_generate_html()
+                with col2:
+                    if st.button("🧹 Выполнить постобработку всех блоков", use_container_width=True):
+                        self._apply_postprocessing()
+                with col3:
+                    # Можно добавить кнопку для сброса флага, если нужно повторить замену
+                    if st.button("🔄 Сбросить этап замены (вернуться к этапу 1)", use_container_width=True):
+                        st.session_state.variables_replaced = False
+                        st.rerun()
+
+                # Здесь можно показывать результаты последней постобработки, если они есть
+                if 'postprocessing_results' in st.session_state:
+                    self._display_postprocessing_results()
 
         st.markdown("---")
 
@@ -1713,6 +1907,9 @@ class Phase6Interface:
                     if st.button("⚡ Удалить спецсимволы", key=f"pop_spec_{block.id}", use_container_width=True):
                         symbols = st.session_state.ui_state.get('selected_symbols_global', [])
                         self._apply_special_symbol_removal(block.id, symbols)
+                        st.rerun()
+                    if st.button("🧹 Постобработка", key=f"pop_post_{block.id}", use_container_width=True):
+                        self._apply_postprocessing(block.id)
                         st.rerun()
                     if st.button("👁️ Предпросмотр HTML", key=f"pop_preview_{block.id}", use_container_width=True):
                         if block.html_text:
