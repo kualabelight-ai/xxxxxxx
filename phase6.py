@@ -809,6 +809,184 @@ class Phase6Interface:
                 st.write("#### Детали по блокам")
                 df = pd.DataFrame(results['details'])
                 st.dataframe(df, use_container_width=True)
+
+    def _render_sidebar(self):
+        """Боковая панель со всеми элементами управления."""
+        fm = st.session_state.fragment_manager
+
+        # --- Статистика ---
+        st.sidebar.markdown("### 📊 Статистика")
+        total_blocks = len(fm.fragments)
+        error_blocks = sum(1 for b in fm.fragments if b.errors)
+        processed = sum(1 for b in fm.fragments if b.status in ('processed', 'fixed'))
+
+        col1, col2 = st.sidebar.columns(2)
+        col1.metric("Всего блоков", total_blocks)
+        col2.metric("С ошибками", error_blocks)
+        col1.metric("Обработано", processed)
+        if total_blocks:
+            st.sidebar.progress(processed / total_blocks)
+
+        st.sidebar.divider()
+
+        # --- Шаг 1. Настройка очистки (единицы и символы) ---
+        st.sidebar.markdown("### ⚙️ Шаг 1. Настройка очистки")
+
+        # Единицы измерения
+        st.sidebar.write("📏 Единицы измерения")
+        found_units = st.session_state.get('found_units', [])
+        if found_units:
+            selected_units = st.sidebar.multiselect(
+                "Выберите единицы для удаления:",
+                found_units,
+                default=st.session_state.ui_state.get('selected_units_global', []),
+                key="selected_units_global_widget"
+            )
+            st.session_state.ui_state['selected_units_global'] = selected_units
+        else:
+            st.sidebar.info("В текстах не найдено стандартных единиц.")
+            st.session_state.ui_state['selected_units_global'] = []
+
+        new_unit = st.sidebar.text_input("Добавить свою единицу:", key="new_unit_input")
+        if st.sidebar.button("➕ Добавить единицу", use_container_width=True):
+            if new_unit and new_unit not in st.session_state.units_manager['units']:
+                st.session_state.units_manager['units'].append(new_unit)
+                self.text_processor.add_unit_to_remove(new_unit)
+                st.session_state.found_units = self._scan_units_in_texts()
+                st.rerun()
+
+        st.sidebar.divider()
+
+        # Спецсимволы
+        st.sidebar.write("⚡ Специальные символы")
+        found_symbols = st.session_state.get('found_special_symbols', [])
+        if found_symbols:
+            selected_symbols = st.sidebar.multiselect(
+                "Выберите символы для удаления:",
+                found_symbols,
+                default=st.session_state.ui_state.get('selected_symbols_global', []),
+                key="selected_symbols_global_widget"
+            )
+            st.session_state.ui_state['selected_symbols_global'] = selected_symbols
+        else:
+            st.sidebar.info("Специальные символы не найдены.")
+            st.session_state.ui_state['selected_symbols_global'] = []
+
+        # Кнопка удаления выбранного из всех блоков
+        if st.sidebar.button("🗑️ Удалить выбранные единицы и символы из ВСЕХ блоков", use_container_width=True):
+            units = st.session_state.ui_state.get('selected_units_global', [])
+            symbols = st.session_state.ui_state.get('selected_symbols_global', [])
+            if units:
+                self._apply_unit_removal(units_to_remove=units)
+            if symbols:
+                self._apply_special_symbol_removal(symbols_to_remove=symbols)
+            st.rerun()
+
+        st.sidebar.divider()
+
+        # --- Шаг 2. Автоматическая обработка ---
+        st.sidebar.markdown("### 🛠️ Шаг 2. Автоматическая обработка")
+
+        if st.sidebar.button("🔧 Автоисправить regular-блоки", use_container_width=True):
+            self._auto_insert_regular_blocks()
+
+        if st.sidebar.button("🔍 Проверить ошибки во всех блоках", use_container_width=True):
+            self._check_all_errors()
+
+        final_confirm = st.sidebar.checkbox(
+            "⚠️ Я готов к финальной замене переменных",
+            key="final_confirm_stage1_sidebar"
+        )
+        if st.sidebar.button("🔄 Заменить переменные во всех блоках",
+                             disabled=not final_confirm,
+                             use_container_width=True):
+            st.warning("Выполняется замена переменных...")
+            self._apply_variable_replacement()
+            st.session_state.variables_replaced = True
+            st.rerun()
+
+        st.sidebar.divider()
+
+        # --- Шаг 3. Постобработка и HTML (появляется после замены) ---
+        if st.session_state.get('variables_replaced', False):
+            st.sidebar.markdown("### 🌐 Шаг 3. Постобработка и HTML")
+
+            if st.sidebar.button("🌐 Сгенерировать HTML для всех блоков", use_container_width=True):
+                self._apply_generate_html()
+
+            if st.sidebar.button("🧹 Выполнить постобработку всех блоков", use_container_width=True):
+                self._apply_postprocessing()
+
+            if st.sidebar.button("🔄 Сбросить этап замены (вернуться к шагу 2)", use_container_width=True):
+                st.session_state.variables_replaced = False
+                st.rerun()
+
+            # Показываем результаты постобработки, если есть
+            if 'postprocessing_results' in st.session_state:
+                with st.sidebar.expander("📊 Результаты постобработки", expanded=False):
+                    results = st.session_state.postprocessing_results
+                    st.metric("Обработано", results.get('total_processed', 0))
+                    st.metric("Удалено единиц", results.get('total_units_removed', 0))
+                    st.metric("Удалено символов", results.get('total_symbols_removed', 0))
+                    st.metric("Новых ошибок", results.get('total_errors', 0))
+
+        st.sidebar.divider()
+
+        # --- Шаг 4. Экспорт (можно оставить на вкладке, но для полноты добавим кнопки) ---
+        st.sidebar.markdown("### 📤 Шаг 4. Экспорт")
+        fmt = st.sidebar.radio("Формат:", ["XLSX (Excel)", "JSON"], horizontal=True, key="sidebar_export_fmt")
+        use_html = st.sidebar.checkbox("Использовать HTML версию",
+                                       value=st.session_state.ui_state.get('show_html', False), key="sidebar_use_html")
+        st.session_state.ui_state['show_html'] = use_html
+
+        if st.sidebar.button("📥 Экспорт", use_container_width=True, type="primary"):
+            fm = st.session_state.fragment_manager
+            tmpl = fm.generate_template()
+            if fmt == "XLSX (Excel)":
+                excel = ExportManager.export_to_excel(fm, tmpl, use_html)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                st.sidebar.download_button(
+                    "⬇️ Скачать Excel",
+                    data=excel,
+                    file_name=f"отчет_{tmpl['category_code']}_{ts}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="sidebar_download_excel"
+                )
+            else:
+                fragments_data = [f.to_dict() for f in fm.fragments]
+                export_data = {
+                    'timestamp': datetime.now().isoformat(),
+                    'category': tmpl['category_code'],
+                    'template': tmpl['template'],
+                    'fragments': fragments_data,
+                    'statistics': {
+                        'total_fragments': len(fm.fragment_names),
+                        'total_blocks': len(fm.fragments),
+                        'error_blocks': sum(1 for f in fm.fragments if f.errors),
+                        'warning_blocks': sum(1 for f in fm.fragments if f.warnings),
+                        'template_order': tmpl['order']
+                    }
+                }
+                json_data = json.dumps(export_data, ensure_ascii=False, indent=2, default=str)
+                st.sidebar.download_button(
+                    "⬇️ Скачать JSON",
+                    data=json_data,
+                    file_name=f"отчет_{tmpl['category_code']}_{datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    key="sidebar_download_json"
+                )
+
+        st.sidebar.divider()
+
+        # --- Кнопка сброса состояния (из _add_reset_button) ---
+        st.sidebar.markdown("### 🛑 Управление состоянием")
+        confirm = st.sidebar.checkbox("Подтвердите сброс", key="sidebar_reset_confirm")
+        if st.sidebar.button("🔄 Сбросить состояние фазы 6", use_container_width=True, type="secondary",
+                             disabled=not confirm):
+            self._reset_state()
+
     def _migrate_fragments(self):
         fm = st.session_state.fragment_manager
         for frag in fm.fragments:
@@ -1444,18 +1622,7 @@ class Phase6Interface:
         time.sleep(1)
         st.rerun()
 
-    def _add_reset_button(self):
-        with st.sidebar:
-            st.divider()
-            st.write("### 🛑 Управление состоянием")
-            confirm_key = "confirm_reset"
-            # Создаем чекбокс и получаем его значение
-            confirm = st.checkbox("Подтвердите сброс", key=confirm_key, value=False)
-            if st.button("🔄 Сбросить состояние фазы 6", use_container_width=True, type="secondary"):
-                if confirm:
-                    self._reset_state()
-                else:
-                    st.warning("Поставьте галочку для подтверждения")
+
 
     # ------------------------------------------------------------------
     #                     ОСНОВНОЙ ИНТЕРФЕЙС
@@ -1477,58 +1644,13 @@ class Phase6Interface:
         st.session_state.found_units = self._scan_units_in_texts()
         st.session_state.found_special_symbols = self._scan_special_symbols_in_texts()
 
-        self._display_top_panel()
-          # Кнопка сброса состояния
+        self._render_sidebar()
 
         # Общие кнопки для массовых операций
         if 'variables_replaced' not in st.session_state:
             st.session_state.variables_replaced = False
 
-        # ---------- Этап 1: Первичная обработка ----------
-        with st.container():
-            st.subheader("🛠️ Этап 1: Первичная обработка")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if st.button("🔧 Автоисправить regular-блоки", use_container_width=True):
-                    self._auto_insert_regular_blocks()
-            with col2:
-                if st.button("🔍 Проверить ошибки во всех блоках", use_container_width=True):
-                    self._check_all_errors()
-            with col3:
-                final_confirm = st.checkbox(
-                    "⚠️ Я готов к финальной замене переменных",
-                    key="final_confirm_stage1"
-                )
-                if st.button("🔄 Заменить переменные во всех блоках",
-                             disabled=not final_confirm,
-                             use_container_width=True):
-                    st.warning("Выполняется замена переменных...")
-                    self._apply_variable_replacement()
-                    st.session_state.variables_replaced = True
-                    st.rerun()
 
-        st.markdown("---")
-
-                # Этап 2: Постобработка (появляется после замены переменных)
-        if st.session_state.variables_replaced:
-            with st.container():
-                st.subheader("🛠️ Этап 2: Постобработка и генерация HTML")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if st.button("🌐 Сгенерировать HTML для всех блоков", use_container_width=True):
-                        self._apply_generate_html()
-                with col2:
-                    if st.button("🧹 Выполнить постобработку всех блоков", use_container_width=True):
-                        self._apply_postprocessing()
-                with col3:
-                    # Можно добавить кнопку для сброса флага, если нужно повторить замену
-                    if st.button("🔄 Сбросить этап замены (вернуться к этапу 1)", use_container_width=True):
-                        st.session_state.variables_replaced = False
-                        st.rerun()
-
-                # Здесь можно показывать результаты последней постобработки, если они есть
-                if 'postprocessing_results' in st.session_state:
-                    self._display_postprocessing_results()
 
         st.markdown("---")
 
@@ -1557,62 +1679,7 @@ class Phase6Interface:
         elif active_tab == tab_options[3]:
             self._display_export_interface()
 
-    def _display_top_panel(self):
-        with st.expander("⚙️ Настройки обработки (единицы, спецсимволы, сброс)", expanded=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("### 📏 Единицы измерения")
-                found_units = st.session_state.get('found_units', [])
-                if found_units:
-                    selected_units = st.multiselect(
-                        "Выберите единицы для удаления:",
-                        found_units,
-                        default=st.session_state.ui_state.get('selected_units_global', []),
-                        key="selected_units_global_widget"
-                    )
-                    st.session_state.ui_state['selected_units_global'] = selected_units
-                else:
-                    st.info("В текстах не найдено стандартных единиц.")
-                    st.session_state.ui_state['selected_units_global'] = []
 
-                new_unit = st.text_input("Добавить свою единицу:", key="new_unit_input")
-                if st.button("➕ Добавить единицу", use_container_width=True):
-                    if new_unit and new_unit not in st.session_state.units_manager['units']:
-                        st.session_state.units_manager['units'].append(new_unit)
-                        self.text_processor.add_unit_to_remove(new_unit)
-                        st.session_state.found_units = self._scan_units_in_texts()
-                        st.rerun()
-
-            with col2:
-                st.write("### ⚡ Специальные символы")
-                found_symbols = st.session_state.get('found_special_symbols', [])
-                if found_symbols:
-                    selected_symbols = st.multiselect(
-                        "Выберите символы для удаления:",
-                        found_symbols,
-                        default=st.session_state.ui_state.get('selected_symbols_global', []),
-                        key="selected_symbols_global_widget"
-                    )
-                    st.session_state.ui_state['selected_symbols_global'] = selected_symbols
-                else:
-                    st.info("Специальные символы не найдены.")
-                    st.session_state.ui_state['selected_symbols_global'] = []
-
-            st.divider()
-            col_apply, col_reset = st.columns(2)
-            with col_apply:
-                if st.button("🗑️ Удалить выбранные единицы и символы из ВСЕХ блоков", use_container_width=True):
-                    units = st.session_state.ui_state.get('selected_units_global', [])
-                    symbols = st.session_state.ui_state.get('selected_symbols_global', [])
-                    if units:
-                        self._apply_unit_removal(units_to_remove=units)
-                    if symbols:
-                        self._apply_special_symbol_removal(symbols_to_remove=symbols)
-                    st.rerun()
-            with col_reset:
-                confirm = st.checkbox("Подтвердите сброс", key="top_reset_confirm")
-                if st.button("🔄 Сбросить состояние фазы 6", use_container_width=True, disabled=not confirm):
-                    self._reset_state()
     # ------------------------------------------------------------------
     #                     ЭКСПОРТ
     # ------------------------------------------------------------------
@@ -1702,19 +1769,25 @@ class Phase6Interface:
             st.info("Нет фрагментов для отображения")
             return
 
-        # --- Фильтры (без изменений) ---
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
+
+        # --- Фильтры ---
+        col_type, col_status = st.columns(2)
+        with col_type:
             filter_type = st.selectbox("Тип блока", ["Все", "regular", "unique", "other"], key="frag_filter_type")
-        with col2:
+        with col_status:
             status_options = ["Все", "pending", "error", "warning", "processed", "fixed"]
             filter_status = st.selectbox("Статус", status_options, key="frag_filter_status")
-        with col3:
+
+        col_search, col_frag = st.columns([2, 1])
+        with col_search:
             search_text = st.text_input("🔍 Поиск по тексту", value=st.session_state.ui_state.get('fragment_search', ''))
             st.session_state.ui_state['fragment_search'] = search_text
-        with col4:
+        with col_frag:
             fragment_names = ["Все фрагменты"] + sorted(fm.fragment_names)
-            selected_fragment = st.selectbox("Фрагмент", fragment_names, key="frag_filter_fragment")
+            selected_fragment = st.selectbox("Фрагмент", fragment_names, key="frag_filter_fragment",
+                                             label_visibility="collapsed")
+
+        # Тип ошибки
         all_error_types = set()
         for b in fm.fragments:
             for err in b.errors:
