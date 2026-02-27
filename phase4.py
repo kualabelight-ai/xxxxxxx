@@ -176,7 +176,12 @@ class UsageTracker:
         self.total_counts = {}
 class PromptGenerator:
     """Генератор промптов с поддержкой динамических переменных"""
-
+    @staticmethod
+    def normalize_string(s):
+        """Удаляет лишние пробелы и приводит к нижнему регистру"""
+        if not isinstance(s, str):
+            return ""
+        return re.sub(r'\s+', ' ', s.strip()).lower()
     def __init__(self, block_manager, variable_manager, dynamic_var_manager):
         self.block_manager = block_manager
         self.variable_manager = variable_manager
@@ -225,9 +230,15 @@ class PromptGenerator:
         # Создаем ключ для трекинга
         context_hash = ""
         if context:
-            # Создаем упрощенный хэш контекста (только важные поля)
             context_keys = ["категория", "характеристика", "значение", "тип"]
-            context_str = "|".join(str(context.get(k, "")) for k in context_keys)
+            # Нормализуем строковые значения перед построением строки
+            normalized_values = []
+            for k in context_keys:
+                val = context.get(k, "")
+                if isinstance(val, str):
+                    val = self.normalize_string(val)
+                normalized_values.append(str(val))
+            context_str = "|".join(normalized_values)
             import hashlib
             context_hash = hashlib.md5(context_str.encode()).hexdigest()[:8]
 
@@ -374,8 +385,9 @@ class PromptGenerator:
             st.session_state.ai_instruction_manager = AIInstructionManager()
 
         # Получаем сохраненные инструкции для этого контекста
+        normalized_context = {k: self.normalize_string(v) for k, v in context.items() if isinstance(v, str)}
         instructions = st.session_state.ai_instruction_manager.get_instruction(
-            block_id, var_name, context
+            block_id, var_name, normalized_context
         )
 
         if instructions:
@@ -445,7 +457,7 @@ class PromptGenerator:
                         feature_data=None, additional_context=None):
         """Подготавливает контекст для подстановки"""
         context = {
-            "категория": self.escape_html(category),
+            "категория": self.normalize_string(category),  # ← нормализуем
             "стоп_слова": self.data_loader.load_stop_words(),
             "маркер": "[МАРКЕР]",
             "название_характеристики": "",
@@ -453,12 +465,11 @@ class PromptGenerator:
             "тип": char_type
         }
 
-        # Добавляем данные характеристики
         if characteristic:
             context.update({
-                "название_характеристики": self.escape_html(characteristic.get("char_name", "")),
+                "название_характеристики": self.normalize_string(characteristic.get("char_name", "")),  # ← нормализуем
                 "значение": self.escape_html(characteristic.get("value", "")),
-                "характеристика": self.escape_html(characteristic.get("char_name", ""))
+                "характеристика": self.normalize_string(characteristic.get("char_name", ""))  # ← нормализуем
             })
 
         # Добавляем feature_data
@@ -558,8 +569,9 @@ class PromptGenerator:
         }
 
         # Ищем инструкции с проверкой контекста (используем новый метод)
+        normalized_search = {k: self.normalize_string(v) for k, v in search_context.items() if isinstance(v, str)}
         instructions = st.session_state.ai_instruction_manager.get_instruction(
-            block_id, var_name, search_context
+            block_id, var_name, normalized_search
         )
 
         if instructions:
@@ -576,16 +588,18 @@ class PromptGenerator:
 
             for ctx_info in all_contexts:
                 stored_ctx = ctx_info.get("context", {})
-                # Проверяем совпадение категории и характеристики
-                if (stored_ctx.get("категория") == search_context["категория"] and
-                        stored_ctx.get("характеристика") == search_context["характеристика"]):
+                # Нормализуем сохранённый контекст
+                stored_norm = {k: self.normalize_string(v) for k, v in stored_ctx.items() if isinstance(v, str)}
+                # Нормализуем искомый контекст
+                search_norm = {k: self.normalize_string(v) for k, v in search_context.items() if isinstance(v, str)}
 
+                if (stored_norm.get("категория") == search_norm["категория"] and
+                        stored_norm.get("характеристика") == search_norm["характеристика"]):
                     # Нашли подходящий контекст
                     context_hash = ctx_info["hash"]
                     instructions = st.session_state.ai_instruction_manager.get_instruction(
-                        block_id, var_name, stored_ctx
+                        block_id, var_name, stored_ctx  # можно передать оригинальный stored_ctx или нормализованный
                     )
-
                     if instructions:
                         return self.escape_html(random.choice(instructions))
 

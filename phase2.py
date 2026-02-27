@@ -582,18 +582,18 @@ def main():
                     st.rerun()
 
         # Быстрые действия с маркерами
-        st.markdown("### ⚡ Быстрые действия")
-        col_quick1, col_quick2, col_quick3, col_quick4 = st.columns(4)
+        #st.markdown("### ⚡ Быстрые действия")
+        #col_quick1, col_quick2, col_quick3, col_quick4 = st.columns(4)
 
-        with col_quick1:
-            if st.button("🗑️ Удалить все пользовательские маркеры", use_container_width=True,
-                         on_click=delete_all_custom_markers):
-                st.rerun()
+        #with col_quick1:
+            #if st.button("🗑️ Удалить все пользовательские маркеры", use_container_width=True,
+                         #on_click=delete_all_custom_markers):
+                #st.rerun()
 
-        with col_quick2:
-            if st.button("📋 Включить все маркеры по умолчанию", use_container_width=True,
-                         on_click=load_default_markers_to_list):
-                st.rerun()
+        #with col_quick2:
+            #if st.button("📋 Включить все маркеры по умолчанию", use_container_width=True,
+                         #on_click=load_default_markers_to_list):
+                #st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
 

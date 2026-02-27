@@ -4,7 +4,14 @@ from pathlib import Path
 import os
 from datetime import datetime
 from styles import load_css
+import auth
 # --- CSS стили для всего приложения ---
+
+st.set_page_config(
+        page_title="Data Harvester Pro",
+        layout="wide",
+        initial_sidebar_state="collapsed"
+    )
 def local_css():
     st.markdown("""
     <style>
@@ -146,29 +153,59 @@ class AppState:
 
 
 # --- Главное приложение ---
-def main():
-    st.set_page_config(
-        page_title="Data Harvester Pro",
-        layout="wide",
-        initial_sidebar_state="collapsed"
-    )
 
+def main():
+    # Проверка аутентификации
+    if not st.session_state.get("authenticated", False):
+        auth.login_form()
+        return
+
+    # Проверка статуса пользователя
+    try:
+        with auth.get_db() as conn:
+            user_status = conn.execute(
+                "SELECT status FROM users WHERE id = ?",
+                (st.session_state["user_id"],)
+            ).fetchone()
+
+            if not user_status or user_status["status"] != "approved":
+                st.error("Ваш доступ к приложению отозван. Обратитесь к администратору.")
+                auth.logout()
+                return
+    except Exception as e:
+        st.error("Ошибка проверки доступа. Пожалуйста, войдите снова.")
+        auth.logout()
+        return
+
+    # Загружаем стили
     load_css()
 
-    # ============ ВЕРХНЯЯ СТРОКА: ЛОГО + ШЕСТЕРЁНКА AI ============
-    col_logo, col_ai = st.columns([6, 1])
+    # Верхняя панель
+    col_logo, col_ai, col_user = st.columns([5, 1, 1])
     with col_logo:
-        st.markdown("""
-        <div style="display: flex; align-items: baseline;">
-            <h1 style="margin: 0; font-size: 2rem; color: #5e4b3c;">📀 DH</h1>
-            <span style="margin-left: 10px; font-size: 1.2rem; color: #7f6e5d;">Data Harvester Pro</span>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("<h1>📀 DH Data Harvester Pro</h1>", unsafe_allow_html=True)
     with col_ai:
-        # Кнопка-шестерёнка для настроек AI
-        if st.button("⚙️", key="ai_config_gear", help="Настройки AI"):
+        if st.button("⚙️ AI", help="Настройки AI"):
             st.session_state.show_ai_config = True
             st.rerun()
+    with col_user:
+        if st.button("👤 Профиль"):
+            st.session_state.show_profile = True
+            st.rerun()
+
+    # Отображение профиля, если нужно
+    if st.session_state.get("show_admin_panel", False):
+        auth.admin_panel()
+        if st.button("← Назад к приложению"):
+            st.session_state.show_admin_panel = False
+            st.rerun()
+
+    if st.session_state.get("show_profile", False):
+        auth.profile_page()
+
+    # Здесь продолжается ваш основной код (фазы, навигация и т.д.)
+    # Например:
+    st.write("Добро пожаловать,", st.session_state["username"])
     # ===============================================================
 
     # Инициализация состояния приложения

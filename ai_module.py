@@ -6,6 +6,8 @@ from typing import Dict, List, Optional, Any
 import httpx
 from openai import OpenAI
 import streamlit as st
+import requests
+import re
 
 
 class AIConfigManager:
@@ -21,7 +23,7 @@ class AIConfigManager:
             "providers": {
                 "openai": {
                     "api_key": "",
-                    "model": "gpt-4",
+                    "model": "gpt-4o-mini",
                     "temperature": 0.7,
                     "max_tokens": 2000,
                     "top_p": 0.9,
@@ -236,70 +238,84 @@ class AIGenerator:
         try:
             # Генерация через OpenAI
             if provider == "openai":
-                client = OpenAI(api_key=config["api_key"])
-                base_url = config.get("base_url")
-                if base_url:
-                    client.base_url = base_url
+                api_key = config.get("api_key")
+                if not api_key:
+                    raise ValueError("API ключ OpenAI (GenAPI) не настроен")
 
-                for i in range(num_variants):
-                    try:
-                        response = client.chat.completions.create(
-                            model=config.get("model", "gpt-3.5-turbo"),
-                            messages=[
-                                {"role": "system", "content": "Ты - опытный технический копирайтер и SEO-специалист."},
-                                {"role": "user", "content": prompt}
-                            ],
-                            temperature=config.get("temperature", 0.7),
-                            max_tokens=config.get("max_tokens", 1000)
-                        )
+                model_id = config.get("model", "gpt-4o-mini")  # ID модели в GenAPI
+                url = f"https://api.gen-api.ru/api/v1/networks/{model_id}"
 
-                        # Получаем текст ответа
-                        text = response.choices[0].message.content.strip()
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
 
-                        # Формируем результат
+                # Формируем тело запроса
+                payload = {
+                    "messages": [
+                        {"role": "system", "content": "Ты - опытный технический копирайтер и SEO-специалист."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": config.get("temperature", 0.7),
+                    "max_tokens": config.get("max_tokens", 1000),
+                    "top_p": config.get("top_p", 0.9),
+                    "frequency_penalty": config.get("frequency_penalty", 0.0),
+                    "presence_penalty": config.get("presence_penalty", 0.0),
+                    "n": num_variants,  # запрашиваем нужное количество вариантов сразу
+                    "is_sync": True  # синхронный режим
+                }
+
+                try:
+                    response = requests.post(url, headers=headers, json=payload, timeout=60)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    # Проверяем структуру ответа (ожидаем choices как в OpenAI)
+                    # Проверяем структуру ответа GenAPI (поле response)
+                    if "response" not in data or not isinstance(data["response"], list):
+                        raise ValueError(f"Неожиданный формат ответа GenAPI: {data}")
+
+                    # Обрабатываем каждый вариант из списка response
+                    for i, resp_item in enumerate(data["response"]):
+                        # Извлекаем текст из message
+                        if "message" in resp_item and "content" in resp_item["message"]:
+                            text = resp_item["message"]["content"].strip()
+                        else:
+                            text = ""  # или можно выбросить ошибку, если структура не соответствует
+
                         result = {
                             "success": True,
                             "text": text,
                             "variant": i + 1,
-                            "model": config.get("model", "gpt-3.5-turbo"),
+                            "model": model_id,
                             "provider": provider
                         }
 
-                        # Если нужно вернуть полный ответ
                         if return_full_response:
-                            # Сохраняем полный ответ API
-                            result["full_response"] = {
-                                "id": response.id,
-                                "model": response.model,
-                                "choices": [
-                                    {
-                                        "index": choice.index,
-                                        "message": {
-                                            "role": choice.message.role,
-                                            "content": choice.message.content
-                                        },
-                                        "finish_reason": choice.finish_reason
-                                    }
-                                    for choice in response.choices
-                                ],
-                                "usage": {
-                                    "prompt_tokens": response.usage.prompt_tokens if response.usage else None,
-                                    "completion_tokens": response.usage.completion_tokens if response.usage else None,
-                                    "total_tokens": response.usage.total_tokens if response.usage else None
-                                },
-                                "created": response.created
-                            }
+                            # Можно сохранить весь ответ, но лучше сохранить data целиком
+                            result["full_response"] = data
 
                         results.append(result)
 
-                    except Exception as e:
-                        results.append({
-                            "success": False,
-                            "error": f"Ошибка OpenAI: {str(e)}",
-                            "text": "",
-                            "variant": i + 1,
-                            "full_response": None if return_full_response else None
-                        })
+                except requests.exceptions.RequestException as e:
+                    error_msg = f"Ошибка HTTP запроса к GenAPI: {str(e)}"
+                    if hasattr(e, 'response') and e.response is not None:
+                        error_msg += f" - {e.response.text}"
+                    results.append({
+                        "success": False,
+                        "error": error_msg,
+                        "text": "",
+                        "variant": 1,
+                        "full_response": None if return_full_response else None
+                    })
+                except Exception as e:
+                    results.append({
+                        "success": False,
+                        "error": f"Ошибка при обработке ответа GenAPI: {str(e)}",
+                        "text": "",
+                        "variant": 1,
+                        "full_response": None if return_full_response else None
+                    })
 
             # Генерация через DeepSeek
             elif provider == "deepseek":
@@ -461,6 +477,13 @@ class AIInstructionManager:
         self.storage_file = storage_file
         self.instructions = self.load_instructions()
 
+    @staticmethod
+    def normalize_string(s):
+        """Удаляет лишние пробелы и приводит к нижнему регистру"""
+        if not isinstance(s, str):
+            return ""
+        return re.sub(r'\s+', ' ', s.strip()).lower()
+
     def load_instructions(self) -> Dict:
         """Загружает сохраненные инструкции"""
         try:
@@ -493,10 +516,27 @@ class AIInstructionManager:
         if var_name not in self.instructions[block_id]:
             return None
 
+        # Нормализуем ожидаемый контекст
+        exp_norm = {
+            "категория": self.normalize_string(expected_context.get("категория", "")),
+            "характеристика": self.normalize_string(expected_context.get("характеристика", "")),
+            "тип": self.normalize_string(expected_context.get("тип", "regular")),
+            "значение": self.normalize_string(expected_context.get("значение", "")),
+            "block_id": self.normalize_string(expected_context.get("block_id", ""))
+        }
+
         for context_hash, data in self.instructions[block_id][var_name].items():
             stored_context = data.get("context", {})
-            expected_type = expected_context.get("тип", "regular")
-            stored_type = stored_context.get("тип", "regular")
+            stored_norm = {
+                "категория": self.normalize_string(stored_context.get("категория", "")),
+                "характеристика": self.normalize_string(stored_context.get("характеристика", "")),
+                "тип": self.normalize_string(stored_context.get("тип", "regular")),
+                "значение": self.normalize_string(stored_context.get("значение", "")),
+                "block_id": self.normalize_string(stored_context.get("block_id", ""))
+            }
+
+            expected_type = exp_norm["тип"]
+            stored_type = stored_norm["тип"]
 
             # Для разных типов - разные правила сравнения
             if expected_type != stored_type:
@@ -504,43 +544,33 @@ class AIInstructionManager:
 
             # 1. Для OTHER блоков: сравниваем категорию, block_id и тип
             if expected_type == "other":
-                stored_block_id = stored_context.get("block_id", "")
-                expected_block_id = expected_context.get("block_id", "")
-
-                if (stored_context.get("категория") == expected_context.get("категория") and
-                        stored_block_id == expected_block_id):
+                if (stored_norm["категория"] == exp_norm["категория"] and
+                        stored_norm["block_id"] == exp_norm["block_id"]):
                     return context_hash
 
             # 2. Для REGULAR характеристик: сравниваем категорию и характеристику
             elif expected_type == "regular":
-                if (stored_context.get("категория") == expected_context.get("категория") and
-                        stored_context.get("характеристика") == expected_context.get("характеристика")):
-                    # Для regular НЕ проверяем значение
+                if (stored_norm["категория"] == exp_norm["категория"] and
+                        stored_norm["характеристика"] == exp_norm["характеристика"]):
                     return context_hash
 
             # 3. Для UNIQUE характеристик: сравниваем категорию, характеристику и значение
             elif expected_type == "unique":
-                if (stored_context.get("категория") == expected_context.get("категория") and
-                        stored_context.get("характеристика") == expected_context.get("характеристика") and
-                        stored_context.get("значение") == expected_context.get("значение")):
+                if (stored_norm["категория"] == exp_norm["категория"] and
+                        stored_norm["характеристика"] == exp_norm["характеристика"] and
+                        stored_norm["значение"] == exp_norm["значение"]):
                     return context_hash
 
             # 4. Для других типов (старая логика для совместимости)
             else:
                 match = True
-                for key in ["категория", "характеристика", "тип"]:
-                    if key in expected_context and key in stored_context:
-                        if str(expected_context[key]).strip() != str(stored_context[key]).strip():
-                            match = False
-                            break
-
-                if match and expected_context.get("тип") == "unique" and "значение" in expected_context:
-                    if "значение" in stored_context:
-                        expected_value = str(expected_context["значение"]).strip()
-                        stored_value = str(stored_context["значение"]).strip()
-                        if expected_value != stored_value:
-                            match = False
-
+                for key in ["категория", "характеристика", "тип", "block_id"]:
+                    if exp_norm.get(key) and stored_norm.get(key) != exp_norm[key]:
+                        match = False
+                        break
+                if match and exp_norm["тип"] == "unique" and exp_norm.get("значение"):
+                    if stored_norm.get("значение") != exp_norm["значение"]:
+                        match = False
                 if match:
                     return context_hash
 
@@ -591,36 +621,48 @@ class AIInstructionManager:
                 return data.get("values", [])
             return None
 
-        # НОВАЯ ЛОГИКА: ищем по правилам для каждого типа
+        # Нормализуем ожидаемый контекст
+        exp_norm = {
+            "категория": self.normalize_string(expected_context.get("категория", "")),
+            "характеристика": self.normalize_string(expected_context.get("характеристика", "")),
+            "тип": self.normalize_string(expected_context.get("тип", "regular")),
+            "значение": self.normalize_string(expected_context.get("значение", "")),
+            "block_id": self.normalize_string(expected_context.get("block_id", ""))
+        }
+
         for context_hash, data in self.instructions[block_id][var_name].items():
             stored_context = data.get("context", {})
-            expected_type = expected_context.get("тип", "regular")
-            stored_type = stored_context.get("тип", "regular")
+            stored_norm = {
+                "категория": self.normalize_string(stored_context.get("категория", "")),
+                "характеристика": self.normalize_string(stored_context.get("характеристика", "")),
+                "тип": self.normalize_string(stored_context.get("тип", "regular")),
+                "значение": self.normalize_string(stored_context.get("значение", "")),
+                "block_id": self.normalize_string(stored_context.get("block_id", ""))
+            }
+
+            expected_type = exp_norm["тип"]
+            stored_type = stored_norm["тип"]
 
             if expected_type != stored_type:
                 continue
 
             # 1. Для OTHER блоков
             if expected_type == "other":
-                stored_block_id = stored_context.get("block_id", "")
-                expected_block_id = expected_context.get("block_id", "")
-
-                if (stored_context.get("категория") == expected_context.get("категория") and
-                        stored_block_id == expected_block_id):
+                if (stored_norm["категория"] == exp_norm["категория"] and
+                        stored_norm["block_id"] == exp_norm["block_id"]):
                     return data.get("values", [])
 
             # 2. Для REGULAR характеристик
             elif expected_type == "regular":
-                if (stored_context.get("категория") == expected_context.get("категория") and
-                        stored_context.get("характеристика") == expected_context.get("характеристика")):
-                    # Для regular НЕ проверяем значение
+                if (stored_norm["категория"] == exp_norm["категория"] and
+                        stored_norm["характеристика"] == exp_norm["характеристика"]):
                     return data.get("values", [])
 
             # 3. Для UNIQUE характеристик
             elif expected_type == "unique":
-                if (stored_context.get("категория") == expected_context.get("категория") and
-                        stored_context.get("характеристика") == expected_context.get("характеристика") and
-                        stored_context.get("значение") == expected_context.get("значение")):
+                if (stored_norm["категория"] == exp_norm["категория"] and
+                        stored_norm["характеристика"] == exp_norm["характеристика"] and
+                        stored_norm["значение"] == exp_norm["значение"]):
                     return data.get("values", [])
 
         return None
@@ -638,11 +680,11 @@ class AIInstructionManager:
             # Нормализуем контекст
         if context:
             normalized_context = {
-                "категория": str(context.get("категория", "")).strip(),
-                "характеристика": str(context.get("характеристика", "")).strip(),
-                "тип": str(context.get("тип", "regular")).strip(),
-                "значение": str(context.get("значение", "")).strip(),
-                "block_id": str(context.get("block_id", "")).strip()  # ДОБАВЛЕНО для other блоков
+                "категория": self.normalize_string(context.get("категория", "")),
+                "характеристика": self.normalize_string(context.get("характеристика", "")),
+                "тип": self.normalize_string(context.get("тип", "regular")),
+                "значение": self.normalize_string(context.get("значение", "")),
+                "block_id": self.normalize_string(context.get("block_id", ""))
             }
         else:
             normalized_context = {

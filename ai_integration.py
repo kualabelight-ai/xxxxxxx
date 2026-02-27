@@ -162,25 +162,49 @@ class AIManager:
         return results
 
     def _call_openai(self, prompt: str, model: str, n: int, settings: Dict) -> List[str]:
-        """Вызывает OpenAI API"""
+        """Вызывает OpenAI через GenAPI"""
+        api_key = self.config.get("openai_api_key", "")
+        if not api_key:
+            return ["OpenAI API ключ (GenAPI) не настроен"]
+
+        # Базовый URL GenAPI
+        base_url = "https://api.gen-api.ru/api/v1/networks"
+        url = f"{base_url}/{model}"  # model уже должна содержать ID модели GenAPI (например, "gpt-4o-mini")
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        # Формируем тело запроса
+        data = {
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": settings["temperature"],
+            "max_tokens": settings["max_tokens"],
+            "top_p": settings["top_p"],
+            "frequency_penalty": settings["frequency_penalty"],
+            "presence_penalty": settings["presence_penalty"],
+            "n": n,
+            "is_sync": True  # синхронный режим для получения ответа сразу
+        }
+
         try:
-            if "openai" not in self.clients:
-                return ["OpenAI клиент не инициализирован"]
-
-            response = self.clients["openai"].chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                n=n,
-                temperature=settings["temperature"],
-                max_tokens=settings["max_tokens"],
-                top_p=settings["top_p"],
-                frequency_penalty=settings["frequency_penalty"],
-                presence_penalty=settings["presence_penalty"]
-            )
-
-            return [choice.message.content for choice in response.choices]
+            response = requests.post(url, headers=headers, json=data, timeout=60)
+            if response.status_code == 200:
+                result = response.json()
+                # Предполагаем, что структура ответа аналогична OpenAI
+                # (нужно проверить по документации GenAPI, возможно, поле называется "output")
+                if "choices" in result:
+                    return [choice["message"]["content"] for choice in result["choices"]]
+                elif "output" in result:
+                    # Альтернативный формат
+                    return [result["output"]]
+                else:
+                    return [f"Неожиданный формат ответа: {result}"]
+            else:
+                return [f"Ошибка API (HTTP {response.status_code}): {response.text}"]
         except Exception as e:
-            return [f"OpenAI ошибка: {str(e)}"]
+            return [f"Исключение при вызове GenAPI: {str(e)}"]
 
     def _call_anthropic(self, prompt: str, model: str, n: int, settings: Dict) -> List[str]:
         """Вызывает Anthropic API"""
@@ -247,20 +271,25 @@ class AIManager:
     def get_available_models(self) -> Dict[str, str]:
         """Возвращает доступные модели"""
         models = {
-            "gpt-4": "GPT-4",
-            "gpt-4-turbo": "GPT-4 Turbo",
+            # OpenAI через GenAPI
+            "gpt-4o-mini": "GPT-4o mini",
+            "gpt-4-turbo-preview": "GPT-4 Turbo",
             "gpt-3.5-turbo": "GPT-3.5 Turbo",
+            # Anthropic (прямое API)
             "claude-3-opus": "Claude 3 Opus",
             "claude-3-sonnet": "Claude 3 Sonnet",
             "claude-3-haiku": "Claude 3 Haiku",
+            # DeepSeek (прямое API)
             "deepseek-chat": "DeepSeek Chat"
         }
 
         available = {}
         if self.config.get("openai_api_key"):
-            for model, desc in models.items():
-                if model.startswith("gpt-"):
-                    available[model] = desc
+            # Добавляем все OpenAI-модели, которые поддерживает GenAPI
+            # Лучше запросить список через API, но для начала можно статически
+            openai_models = ["gpt-4o-mini", "gpt-4-turbo-preview", "gpt-3.5-turbo"]
+            for model_id in openai_models:
+                available[model_id] = models.get(model_id, model_id)
 
         if self.config.get("anthropic_api_key"):
             for model, desc in models.items():

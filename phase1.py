@@ -1014,12 +1014,12 @@ def main():
                     "edited_names": st.session_state.edited_names
                 }
 
-                st.download_button(
-                    "⚙️ Скачать Конфигурацию",
-                    data=json.dumps(config_export, ensure_ascii=False, indent=4),
-                    file_name=f"config_{timestamp}.json",
-                    mime="application/json"
-                )
+                #st.download_button(
+                    #"⚙️ Скачать Конфигурацию",
+                    #data=json.dumps(config_export, ensure_ascii=False, indent=4),
+                    #file_name=f"config_{timestamp}.json",
+                    #mime="application/json"
+                #)
 
 
     elif uploaded_file:
