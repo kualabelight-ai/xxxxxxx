@@ -312,7 +312,7 @@ def main():
         st.header("⚙️ Настройки")
 
         with st.expander("🔧 Маркеры по умолчанию", expanded=False):
-            if st.button("✏️ Редактировать маркеры по умолчанию"):
+            if st.button("✏️ Редактировать"):
                 st.session_state.show_default_markers_editor = not st.session_state.show_default_markers_editor
 
             if st.session_state.show_default_markers_editor:
@@ -349,7 +349,7 @@ def main():
             st.info("Запустите фазу 1 для автоматической передачи данных")
 
         st.divider()
-        st.header("⚡ Быстрые действия")
+        '''st.header("⚡ Быстрые действия")
 
         if st.button("🔄 Сбросить выбор категории", use_container_width=True):
             st.session_state.selected_category = ""
@@ -359,7 +359,7 @@ def main():
 
         if st.button("📋 Загрузить маркеры по умолчанию", use_container_width=True,
                      on_click=load_default_markers_to_list):
-            st.rerun()
+            st.rerun()'''
 
     # --- Основной контент ---
     if st.session_state.loaded_data and 'category' in st.session_state.loaded_data:

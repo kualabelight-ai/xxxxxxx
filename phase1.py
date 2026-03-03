@@ -330,9 +330,43 @@ def local_css():
 
 
 # --- Логика обработки ---
+def normalize_string(s):
+    """Нормализует строку: убирает лишние пробелы"""
+    if not isinstance(s, str):
+        return s
+    # Заменяем множественные пробелы на один, убираем в начале и конце
+    return ' '.join(s.split())  # Это преобразует "Труба  горячедеформированная" в "Труба горячедеформированная"
+
+
+def normalize_data(data):
+    """
+    Нормализует данные: убирает лишние пробелы в названиях категорий и характеристик.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    # Нормализуем название категории
+    if "ПараметрыТовара" in data and isinstance(data["ПараметрыТовара"], dict):
+        params = data["ПараметрыТовара"]
+        if "Наименование" in params and isinstance(params["Наименование"], str):
+            params["Наименование"] = normalize_string(params["Наименование"])
+            print(f"Нормализовано название категории: {params['Наименование']}")  # Для отладки
+
+        # Нормализуем названия характеристик
+        if "Характеристики" in params and isinstance(params["Характеристики"], list):
+            for char in params["Характеристики"]:
+                if "Наименование" in char and isinstance(char["Наименование"], str):
+                    char["Наименование"] = normalize_string(char["Наименование"])
+
+    return data
+
+
+# Затем в функции load_data:
 def load_data(uploaded_file):
     try:
-        return json.load(uploaded_file)
+        data = json.load(uploaded_file)
+        # Нормализуем данные сразу после загрузки
+        return normalize_data(data)
     except Exception as e:
         st.error(f"Ошибка чтения JSON: {e}")
         return None
@@ -554,38 +588,22 @@ def main():
     # --- Замена сайдбара: все элементы перенесены в основное окно ---
 
     # 1. Загрузка файла (не растягиваем — помещаем в центральную колонку)
-    col_file1, col_file2, col_file3 = st.columns([1, 2, 1])
-    with col_file2:
+
+        # 3. Два блока настроек в две колонки (чтобы не растягивались)
+    with st.sidebar:
+        st.header("Загрузка данных")
+
+        # Загрузка файла в sidebar
         uploaded_file = st.file_uploader(
-            "Загрузите JSON файл категории",
+            "📁 Загрузите JSON файл категории",
             type="json",
-            label_visibility="collapsed"  # скрываем метку, оставляем только поле
+            help="Выберите JSON файл с данными о товарах и характеристиках"
         )
 
-    # 2. Если файл загружен — обрабатываем (логика из sidebar)
-    if uploaded_file:
-        # Проверяем, нужно ли переобрабатывать (новый файл или первый запуск)
-        if (st.session_state.uploaded_filename != uploaded_file.name or
-                st.session_state.processed_chars is None):
-            raw_data = load_data(uploaded_file)
-            if raw_data:
-                st.session_state.raw_data = raw_data
-                st.session_state.processed_chars, st.session_state.duplicate_names = process_characteristics(
-                    raw_data, st.session_state.black_list
-                )
-                st.session_state.uploaded_filename = uploaded_file.name
-
-                # Устанавливаем имя категории по умолчанию (если ещё не задано)
-                filename = uploaded_file.name
-                base_name = os.path.splitext(filename)[0]
-                if not st.session_state.category_name:
-                    st.session_state.category_name = base_name
-
-    # 3. Два блока настроек в две колонки (чтобы не растягивались)
-    with st.sidebar:
+        st.markdown("---")  # Разделитель
         st.header("Настройки")
 
-        with st.expander("🚫 Редактировать черный список"):
+        with st.expander("🚫 Черный список"):
             st.text_area(
                 "Список ID или имен (через запятую)",
                 value=", ".join(st.session_state.black_list),
@@ -595,7 +613,7 @@ def main():
             )
 
         st.number_input(
-            "🌐 Глобальный Top N для всех характеристик",
+            "🌐 Top N для всех характеристик",
             min_value=1,
             max_value=100,
             value=st.session_state.global_top_n,
@@ -603,19 +621,49 @@ def main():
             on_change=update_global_top_n,
             help="Будет применён ко всем характеристикам в режиме 'Top N'"
         )
+    # 2. Если файл загружен — обрабатываем (логика из sidebar)
+    if uploaded_file:
+        # Проверяем, нужно ли переобрабатывать (новый файл или первый запуск)
+        if (st.session_state.uploaded_filename != uploaded_file.name or
+                st.session_state.processed_chars is None):
+            raw_data = load_data(uploaded_file)  # Здесь данные УЖЕ нормализованы!
+            if raw_data:
+                st.session_state.raw_data = raw_data
+                st.session_state.processed_chars, st.session_state.duplicate_names = process_characteristics(
+                    raw_data, st.session_state.black_list
+                )
+                st.session_state.uploaded_filename = uploaded_file.name
+
+                # ВАЖНО: Устанавливаем имя категории из НОРМАЛИЗОВАННЫХ данных
+                original_category = raw_data.get('ПараметрыТовара', {}).get('Наименование', '')
+                if original_category:
+                    st.session_state.category_name = original_category
+                    print(f"Установлена категория из данных: {st.session_state.category_name}")  # Для отладки
+                else:
+                    # Если нет в данных, берем из имени файла и тоже нормализуем
+                    filename = uploaded_file.name
+                    base_name = os.path.splitext(filename)[0]
+                    st.session_state.category_name = normalize_string(base_name)
+                    print(f"Установлена категория из имени файла (нормализовано): {st.session_state.category_name}")
+
+
 
     # 4. Название категории (показываем только если файл загружен)
-    if uploaded_file:
-        st.markdown("---")  # визуальный разделитель
+    '''if uploaded_file:
+        st.markdown("---")
         st.markdown("### 🏷️ Название категории для экспорта")
         col_cat1, col_cat2 = st.columns([1, 3])
         with col_cat2:
-            st.text_input(
-                "Измените название категории (по умолчанию — имя файла)",
+            # Важно: value должно быть st.session_state.category_name
+            category_input = st.text_input(
+                "Измените название категории",
                 value=st.session_state.category_name,
                 key="category_name_input",
                 label_visibility="collapsed"
             )
+            # Обновляем session_state при изменении
+            if category_input != st.session_state.category_name:
+                st.session_state.category_name = category_input'''
 
     # --- Основной интерфейс ---
     if uploaded_file and st.session_state.raw_data:
@@ -628,9 +676,9 @@ def main():
         with col1:
             st.subheader(f"📁 Файл: {uploaded_file.name}")
             st.info(f"Категория из файла: {raw_data.get('ПараметрыТовара', {}).get('Наименование', 'Неизвестно')}")
-        with col2:
+        '''with col2:
             st.subheader(f"🏷️ Категория для экспорта")
-            st.success(f"**{st.session_state.category_name}**")
+            st.success(f"**{st.session_state.category_name}**")'''
 
         # Предупреждения о дубликатах
         if duplicate_names:
@@ -941,19 +989,24 @@ def main():
                         "original": cfg['original_name'],
                         "edited": cfg['name']
                     }
-
+            st.session_state.category_name = normalize_string(st.session_state.category_name)
             # Итоговый результат
             final_result = {
-                "category": st.session_state.category_name,
+                "category": st.session_state.category_name,  # Здесь должно быть нормализованное значение
                 "characteristics": final_output,
                 "metadata": {
-                    "source_file": uploaded_file.name,
+                    "source_file": uploaded_file.name,  # Оригинальное имя файла (может быть с пробелами)
                     "original_category": raw_data.get("ПараметрыТовара", {}).get("Наименование", "Неизвестно"),
+                    # Уже нормализовано
                     "total_items": len(raw_data["Товары"]),
                     "selected_characteristics_count": len(final_output),
                     "export_timestamp": datetime.now().isoformat()
                 }
             }
+
+            # Для отладки выведем значения перед сохранением
+            print(f"Финальная категория: {final_result['category']}")
+            print(f"Оригинальная категория: {final_result['metadata']['original_category']}")
 
 
             # Сохраняем данные в session_state для главного приложения
