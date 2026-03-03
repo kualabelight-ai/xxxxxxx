@@ -582,9 +582,9 @@ def main():
                     st.session_state.category_name = base_name
 
     # 3. Два блока настроек в две колонки (чтобы не растягивались)
-    col_left, col_right = st.columns(2, gap="large")
+    with st.sidebar:
+        st.header("Настройки")
 
-    with col_left:
         with st.expander("🚫 Редактировать черный список"):
             st.text_area(
                 "Список ID или имен (через запятую)",
@@ -594,7 +594,6 @@ def main():
                 height=150
             )
 
-    with col_right:
         st.number_input(
             "🌐 Глобальный Top N для всех характеристик",
             min_value=1,
