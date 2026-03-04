@@ -662,3 +662,22 @@
 2026-02-27 11:21:50,212 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
 2026-03-03 12:30:27,874 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
 2026-03-03 13:52:27,399 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-03 13:56:34,726 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-03 14:20:44,028 - INFO - Login attempt - User: kek - Status: FAILURE - IP: unknown
+2026-03-03 14:20:46,838 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-03 15:05:05,620 - INFO - Login attempt - User: admin - Status: SUCCESS - IP: unknown
+2026-03-03 15:38:44,835 - INFO - Login attempt - User: admin - Status: SUCCESS - IP: unknown
+2026-03-03 15:39:31,370 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-03 15:44:52,885 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-03 15:45:19,584 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-03 15:51:48,604 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-03 15:52:35,835 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-03 15:52:40,704 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-03 15:52:45,088 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-03 16:15:28,649 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-03 16:16:13,499 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-03 16:16:51,999 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-03 16:22:12,963 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-03 16:22:28,986 - INFO - Login attempt - User: авторитет - Status: SUCCESS - IP: unknown
+2026-03-03 16:23:09,062 - INFO - Login attempt - User: авторитет - Status: SUCCESS - IP: unknown
+2026-03-03 16:53:21,925 - INFO - Login attempt - User: admin - Status: SUCCESS - IP: unknown

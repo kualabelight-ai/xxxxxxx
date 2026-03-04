@@ -2444,7 +2444,7 @@ def show_variables_editor():
                 variables.append(new_static_var_name)
                 variables_data[new_static_var_name] = {
                     "name": new_static_var_name,
-                    "description": f"Статическая переменная: {new_static_var_name}",
+                    "description": f"Статическаяsss переменная: {new_static_var_name}",
                     "type": "static",
                     "values": [f"Значение для {new_static_var_name} 1", f"Значение для {new_static_var_name} 2"]
                 }
