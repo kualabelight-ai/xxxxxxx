@@ -350,7 +350,7 @@ def normalize_data(data):
         params = data["ПараметрыТовара"]
         if "Наименование" in params and isinstance(params["Наименование"], str):
             params["Наименование"] = normalize_string(params["Наименование"])
-            print(f"Нормализовано название категории: {params['Наименование']}")  # Для отладки
+            #print(f"Нормализовано название категории: {params['Наименование']}")  # Для отладки
 
         # Нормализуем названия характеристик
         if "Характеристики" in params and isinstance(params["Характеристики"], list):
@@ -407,6 +407,71 @@ def is_empty_value(val):
     return False
 
 
+def format_top_goods(raw_data, top_n):
+    """
+    Формирует текст с топ-N товаров по количеству предложений.
+    Включает единицы измерения и общее количество предложений.
+    Возвращает строку для копирования.
+    """
+    items = raw_data.get('Товары', [])
+    if not items:
+        return "Нет товаров"
+
+    # Создаем маппинг ID характеристики -> {name, unit}
+    char_info = {}
+    for char in raw_data.get('ПараметрыТовара', {}).get('Характеристики', []):
+        char_id = char['ID']
+        char_info[char_id] = {
+            'name': char.get('Наименование', ''),
+            'unit': char.get('ЕдиницаИзмеренияХарактеристики', '')
+        }
+
+    offers_keys = ["9000048005", "9000048006", "Всего предложений", "Предложения", "Количество предложений"]
+
+    # Собираем товары с количеством предложений
+    goods_with_offers = []
+    for item in items:
+        chars = item.get('Характеристики', {})
+        offers_count = 0
+        for key in offers_keys:
+            if key in chars:
+                try:
+                    offers_count = int(chars[key])
+                    break
+                except (ValueError, TypeError):
+                    pass
+        goods_with_offers.append((offers_count, item))
+
+    # Сортируем по убыванию предложений
+    goods_with_offers.sort(key=lambda x: x[0], reverse=True)
+    top_goods = goods_with_offers[:top_n]
+
+    category_name = raw_data.get('ПараметрыТовара', {}).get('Наименование', 'Категория')
+    lines = []
+    for offers, item in top_goods:
+        parts = [category_name]
+        chars = item.get('Характеристики', {})
+        for char_id, value in chars.items():
+            if char_id in offers_keys:
+                continue
+            if char_id not in char_info:
+                continue
+            info = char_info[char_id]
+            if is_empty_value(value):
+                continue
+            # Формируем часть "название значение единица"
+            part = info['name']
+            if value is not None:
+                part += f" {value}"
+            if info['unit'] and not is_empty_value(info['unit']):
+                part += f" {info['unit']}"
+            parts.append(part)
+        # Добавляем общее количество предложений
+        parts.append(f"Предложений: {offers}")
+        line = ", ".join(parts)
+        lines.append(line)
+
+    return "\n\n".join(lines)
 def process_characteristics(data, black_list):
     params_info = data.get("ПараметрыТовара", {}).get("Характеристики", [])
     items = data.get("Товары", [])
@@ -621,6 +686,26 @@ def main():
             on_change=update_global_top_n,
             help="Будет применён ко всем характеристикам в режиме 'Top N'"
         )
+        if st.session_state.get('raw_data') is not None:
+            st.markdown("---")
+            st.subheader("📊 Топ товаров по предложениям")
+            total_items = len(st.session_state.raw_data['Товары'])
+            top_n = st.number_input(
+                "Количество товаров",
+                min_value=1,
+                max_value=total_items,
+                value=min(3, total_items),
+                step=1,
+                key="top_goods_n"
+            )
+            top_text = format_top_goods(st.session_state.raw_data, top_n)
+            st.text_area(
+                "Товары для копирования",
+                value=top_text,
+                height=300,
+                key="top_goods_text"
+            )
+
     # 2. Если файл загружен — обрабатываем (логика из sidebar)
     if uploaded_file:
         # Проверяем, нужно ли переобрабатывать (новый файл или первый запуск)
@@ -638,13 +723,13 @@ def main():
                 original_category = raw_data.get('ПараметрыТовара', {}).get('Наименование', '')
                 if original_category:
                     st.session_state.category_name = original_category
-                    print(f"Установлена категория из данных: {st.session_state.category_name}")  # Для отладки
+                    #print(f"Установлена категория из данных: {st.session_state.category_name}")  # Для отладки
                 else:
                     # Если нет в данных, берем из имени файла и тоже нормализуем
                     filename = uploaded_file.name
                     base_name = os.path.splitext(filename)[0]
                     st.session_state.category_name = normalize_string(base_name)
-                    print(f"Установлена категория из имени файла (нормализовано): {st.session_state.category_name}")
+                    #print(f"Установлена категория из имени файла (нормализовано): {st.session_state.category_name}")
 
 
 

@@ -679,7 +679,22 @@ class EnhancedTextProcessor:
                 content = re.sub(r'^[—\-*]\s*', '', line)
                 html_lines.append(f'<li>{content}</li>')
 
-            # Обычный текст (может содержать inline-разметку)
+                # --- НОВЫЙ БЛОК: inline-список в одной строке ---
+            elif ' - ' in line:
+                parts = line.split(' - ')
+                if len(parts) >= 3:
+                    intro = parts[0].strip()
+                    items = [p.strip() for p in parts[1:] if p.strip()]
+                    if intro:
+                        html_lines.append(f'<p>{intro}</p>')
+                    html_lines.append('<ul>')
+                    for item in items:
+                        html_lines.append(f'<li>{item}</li>')
+                    html_lines.append('</ul>')
+                    continue  # пропускаем обычный текст
+                # --- конец нового блока ---
+
+                # Обычный текст
             else:
                 if in_list:
                     html_lines.append(f'</{list_type}>')

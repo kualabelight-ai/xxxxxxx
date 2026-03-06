@@ -12,6 +12,8 @@ base = "light"
 [client]
 toolbarMode = "minimal"
 
+
+
 # Принудительное использование HTTPS (если есть сертификаты)
 # enableHTTPS = true
 # sslCertFile = "cert.pem"

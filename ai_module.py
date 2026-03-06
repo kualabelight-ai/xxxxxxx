@@ -494,7 +494,15 @@ class AIInstructionManager:
         except:
             pass
         return {}
+    def reload(self):
+        """Перезагружает инструкции из файла (сбрасывает кэш в памяти)"""
+        self.instructions = self.load_instructions()
+        return True
 
+    def clear_all_instructions(self):
+        """Полностью очищает все инструкции (память и файл)"""
+        self.instructions = {}
+        return self.save_instructions()
     def save_instructions(self) -> bool:
         """Сохраняет инструкции в файл"""
         try:

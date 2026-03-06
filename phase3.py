@@ -19,6 +19,9 @@ def init_ai_managers():
 
     if 'ai_instruction_manager' not in st.session_state:
         st.session_state.ai_instruction_manager = AIInstructionManager()
+    else:
+        # Принудительно перезагружаем инструкции из файла
+        st.session_state.ai_instruction_manager.reload()
 
 
 def show_ai_variable_generator(block_id, var_name, var_data):
@@ -162,6 +165,7 @@ def show_ai_variable_generator(block_id, var_name, var_data):
                                 saved_count += len(values)
 
                 st.success(f"✅ Сгенерировано и сохранено {saved_count} инструкций!")
+                st.session_state.ai_instruction_manager.reload()  # ← ДОБАВЬ ЭТУ СТРОКУ
                 st.rerun()
 
     with col_gen3:
@@ -721,7 +725,16 @@ def show_ai_variables_overview():
     if not ai_vars:
         st.info("Нет AI-переменных. Создайте их во вкладке «Редактирование статических переменных» → AI.")
         return
-
+    st.markdown("---")
+    col_clear1, col_clear2 = st.columns([3, 1])
+    with col_clear2:
+        if st.button("🧹 Очистить все инструкции", type="primary", use_container_width=True):
+            if 'ai_instruction_manager' in st.session_state:
+                st.session_state.ai_instruction_manager.clear_all_instructions()
+                st.success("✅ Все сохранённые AI-инструкции удалены!")
+                st.rerun()
+    with col_clear1:
+        st.caption("Осторожно: это действие безвозвратно удалит все сгенерированные инструкции для всех блоков.")
     # --- Кнопки управления выбором ---
     col1, col2, col3, col4 = st.columns([1, 1, 2, 4])
     with col1:
@@ -863,6 +876,7 @@ def show_ai_variables_overview():
                 with st.expander("Подробности"):
                     for log in results_log:
                         st.write(f"**{log['block']} / {log['var']}**: успех {log['success']}, ошибок {log['errors']}")
+                st.session_state.ai_instruction_manager.reload()
                 st.rerun()
 
     # --- Индивидуальная генерация ---
@@ -1624,6 +1638,23 @@ def show_block_editor():
     # Получаем текущие переменные блока
     variables = selected_block.get("variables", [])
     variables_data = selected_block.get("variables_data", {})
+
+    # Объединяем имена из обоих списков
+    all_var_names = set(variables) | set(variables_data.keys())
+    variables = list(all_var_names)
+
+    # Для тех, что есть в all_var_names, но нет в variables_data, создаём запись по умолчанию
+    for var in all_var_names:
+        if var not in variables_data:
+            variables_data[var] = {
+                "name": var,
+                "description": f"Автоматически созданная переменная {var}",
+                "type": "static",
+                "values": []
+            }
+
+    selected_block["variables"] = variables
+    selected_block["variables_data"] = variables_data
     template = selected_block.get("template", "")
 
     # Определяем динамические переменные, доступные в системе
@@ -2235,6 +2266,8 @@ def show_ai_generation_for_characteristics(block_id, var_name, var_data, block):
                 st.success(f"✅ Сгенерировано {success_count} AI-инструкций!")
             else:
                 st.error("❌ Не удалось сгенерировать ни одну инструкцию")
+            st.session_state.ai_instruction_manager.reload()  # ← ДОБАВЬ ЭТУ СТРОКУ
+            st.rerun()  # ← Добавь rerun, если его нет, чтобы обновить UI
 
 
 def show_ai_generation_for_other_blocks(block_id, var_name, var_data, block):
@@ -3060,33 +3093,22 @@ def batch_generate_for_other(block_id, var_name, var_data, block):
 
 
 def has_ai_values(block_id, var_name):
-    """
-    Возвращает True, если для данной переменной существуют инструкции,
-    сгенерированные для текущей категории (из фазы 2).
-    """
-    # Текущая категория
     phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
-    current_category = phase2_data.get('category', '')
+    current_category = phase2_data.get('category', '').strip()
 
     if not current_category:
         return False
 
-    # Получаем менеджер инструкций
     ai_mgr = st.session_state.get('ai_instruction_manager')
-    if not ai_mgr:
+    if not ai_mgr or block_id not in ai_mgr.instructions or var_name not in ai_mgr.instructions[block_id]:
         return False
 
-    # Проверяем наличие данных для блока и переменной
-    if block_id not in ai_mgr.instructions:
-        return False
-    if var_name not in ai_mgr.instructions[block_id]:
-        return False
-
-    # Перебираем все сохранённые контексты для этой переменной
     for context_hash, data in ai_mgr.instructions[block_id][var_name].items():
         context = data.get("context", {})
-        # Проверяем, что категория совпадает и есть значения
-        if context.get("категория") == current_category:
+        cat_in_context = context.get("категория") or context.get("category", "")
+
+        # ← Вот это ключевое изменение
+        if cat_in_context.strip().lower() == current_category.lower():
             if data.get("values"):
                 return True
 

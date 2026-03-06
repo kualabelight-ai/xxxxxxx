@@ -10,7 +10,7 @@ import auth
 st.set_page_config(
         page_title="Data Harvester Pro",
         layout="wide",
-        initial_sidebar_state="collapsed"
+        initial_sidebar_state="expanded"
     )
 def local_css():
     st.markdown("""
