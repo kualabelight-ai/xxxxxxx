@@ -879,10 +879,21 @@ class Phase5UIComponents:
             col1, col2 = st.columns(2)
 
             with col1:
+                # Расширяем список провайдеров
+                available_providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
+                provider_labels = {
+                    "openai": "OpenAI / GenAPI (GPT модели)",
+                    "deepseek": "DeepSeek",
+                    "genapi_gemini": "Gemini через GenAPI.ru (Россия, без VPN)",
+                    "true_gemini": "Настоящий Google Gemini (требует VPN)"
+                }
+
+                current_provider = st.session_state.phase5['generation_settings'].get('provider', 'deepseek')
                 provider = st.selectbox(
                     "Провайдер AI:",
-                    ["openai", "deepseek"],
-                    index=0 if st.session_state.phase5['generation_settings']['provider'] == 'openai' else 1,
+                    available_providers,
+                    format_func=lambda x: provider_labels.get(x, x),
+                    index=available_providers.index(current_provider) if current_provider in available_providers else 1,
                     key="ai_provider_select_phase5"
                 )
 
@@ -890,17 +901,20 @@ class Phase5UIComponents:
                     "Temperature:",
                     min_value=0.0,
                     max_value=2.0,
-                    value=st.session_state.phase5['generation_settings']['temperature'],
+                    value=st.session_state.phase5['generation_settings'].get('temperature', 0.7),
                     step=0.1,
                     key="ai_temperature_phase5"
                 )
 
             with col2:
+                # Динамический max_tokens в зависимости от провайдера (Gemini поддерживают больше)
+                max_tokens_default = 2000
+                max_tokens_max = 16384 if "gemini" in provider else 8000
                 max_tokens = st.number_input(
                     "Max Tokens:",
                     min_value=100,
-                    max_value=8000,
-                    value=st.session_state.phase5['generation_settings']['max_tokens'],
+                    max_value=max_tokens_max,
+                    value=st.session_state.phase5['generation_settings'].get('max_tokens', max_tokens_default),
                     key="ai_max_tokens_phase5"
                 )
 
@@ -908,20 +922,28 @@ class Phase5UIComponents:
                     "Повторных попыток при ошибке:",
                     min_value=1,
                     max_value=10,
-                    value=st.session_state.phase5['generation_settings']['retry_count'],
+                    value=st.session_state.phase5['generation_settings'].get('retry_count', 3),
                     key="ai_retry_count_phase5"
                 )
 
+            # Общая задержка
             delay = st.slider(
                 "Задержка между запросами (сек):",
                 min_value=0.5,
                 max_value=10.0,
-                value=st.session_state.phase5['generation_settings']['delay_between_requests'],
+                value=st.session_state.phase5['generation_settings'].get('delay_between_requests', 2.0),
                 step=0.5,
                 key="ai_delay_phase5"
             )
 
-            # Сохраняем настройки
+            # Дополнительные предупреждения / поля в зависимости от провайдера
+            if provider == "true_gemini":
+                st.warning("⚠️ True Gemini требует VPN или зарубежный IP из России. Без него запросы не пройдут.")
+            elif provider == "genapi_gemini":
+                st.info(
+                    "ℹ️ GenAPI Gemini работает без VPN, оплата рублями. Поддерживает синхронный режим по умолчанию.")
+
+            # Кнопка сохранения
             if st.button("💾 Сохранить настройки", key="save_settings_phase5_btn"):
                 st.session_state.phase5['generation_settings'].update({
                     'provider': provider,

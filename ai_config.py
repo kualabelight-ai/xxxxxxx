@@ -14,10 +14,13 @@ def show_ai_config_interface():
     st.markdown("---")
 
     # Выбор провайдера по умолчанию
+    available_providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
+    current_default = config_manager.config.get("default_provider", "deepseek")
+
     default_provider = st.selectbox(
         "Провайдер по умолчанию:",
-        ["openai", "deepseek"],
-        index=0 if config_manager.config["default_provider"] == "openai" else 1
+        available_providers,
+        index=available_providers.index(current_default) if current_default in available_providers else 1
     )
 
     if default_provider != config_manager.config["default_provider"]:
@@ -25,13 +28,16 @@ def show_ai_config_interface():
         st.success(f"Провайдер по умолчанию изменен на {default_provider}")
 
     # Настройки для каждого провайдера
-    tabs = st.tabs(["OpenAI", "DeepSeek"])
+    providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
 
-    for idx, provider in enumerate(["openai", "deepseek"]):
+    # Создаём вкладки с красивыми названиями
+    tabs = st.tabs([p.replace("_", " ").title() for p in providers])
+
+    for idx, provider in enumerate(providers):
         with tabs[idx]:
-            provider_config = config_manager.get_provider_config(provider)
+            provider_config = config_manager.get_provider_config(provider) or {}
 
-            st.subheader(f"Настройки {provider.upper()}")
+            st.subheader(f"Настройки {provider.upper().replace('_', ' ')}")
 
             # API ключ
             api_key = st.text_input(
@@ -41,16 +47,33 @@ def show_ai_config_interface():
                 key=f"{provider}_api_key"
             )
 
-            # Модель
+            # Выбор модели — в зависимости от провайдера
             if provider == "openai":
                 models = ["gpt-4o-mini", "gpt-4-turbo-preview", "gpt-3.5-turbo"]
-            else:
+            elif provider == "deepseek":
                 models = ["deepseek-chat", "deepseek-coder"]
+            elif provider == "genapi_gemini":
+                models = [
+                    "gemini-2-5-flash-lite",
+                    "gemini-2-5-flash",
+                    "gemini-3-1-pro",
+                    "gemini-flash-image"
+                ]
+            elif provider == "true_gemini":
+                models = [
+                    "gemini-2.5-flash",
+                    "gemini-2.5-flash-lite",
+                    "gemini-1.5-pro",
+                    "gemini-1.5-flash"
+                ]
+            else:
+                models = ["неизвестный провайдер"]
 
             model = st.selectbox(
                 "Модель:",
                 models,
-                index=models.index(provider_config.get("model", models[0])),
+                index=models.index(provider_config.get("model", models[0]))
+                if provider_config.get("model") in models else 0,
                 key=f"{provider}_model"
             )
 
@@ -70,7 +93,7 @@ def show_ai_config_interface():
                 max_tokens = st.number_input(
                     "Max Tokens:",
                     min_value=100,
-                    max_value=8000,
+                    max_value=16384,  # для новых Gemini можно больше
                     value=int(provider_config.get("max_tokens", 2000)),
                     key=f"{provider}_tokens"
                 )
@@ -85,12 +108,15 @@ def show_ai_config_interface():
                     key=f"{provider}_top_p"
                 )
 
+                # Для true_gemini frequency/presence не влияют → отключаем
+                freq_disabled = (provider == "true_gemini")
                 frequency_penalty = st.slider(
                     "Frequency Penalty:",
                     min_value=-2.0,
                     max_value=2.0,
                     value=float(provider_config.get("frequency_penalty", 0.0)),
                     step=0.1,
+                    disabled=freq_disabled,
                     key=f"{provider}_freq"
                 )
 
@@ -100,11 +126,25 @@ def show_ai_config_interface():
                     max_value=2.0,
                     value=float(provider_config.get("presence_penalty", 0.0)),
                     step=0.1,
+                    disabled=freq_disabled,
                     key=f"{provider}_pres"
                 )
 
-            # Настройки rate limit
-            st.subheader("Ограничения запросов")
+            # Специфические поля для отдельных провайдеров
+            extra_config = {}
+            if provider == "genapi_gemini":
+                is_sync = st.checkbox(
+                    "Синхронный режим (is_sync = true)",
+                    value=provider_config.get("is_sync", True),
+                    key=f"{provider}_is_sync"
+                )
+                extra_config["is_sync"] = is_sync
+
+            if provider == "true_gemini":
+                st.caption("⚠️ Для работы из России обычно нужен VPN или прокси-сервер")
+
+            # Ограничения запросов — общие для всех
+            st.subheader("Ограничения запросов (общие)")
             col_r1, col_r2 = st.columns(2)
 
             with col_r1:
@@ -127,26 +167,26 @@ def show_ai_config_interface():
                 )
 
             # Кнопка сохранения
-            if st.button(f"💾 Сохранить настройки {provider}", key=f"save_{provider}"):
+            if st.button(f"💾 Сохранить настройки {provider.upper().replace('_', ' ')}", key=f"save_{provider}"):
                 new_config = {
-                    "api_key": api_key,
+                    "api_key": api_key.strip(),
                     "model": model,
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                     "top_p": top_p,
-                    "frequency_penalty": frequency_penalty,
-                    "presence_penalty": presence_penalty
+                    "frequency_penalty": frequency_penalty if not freq_disabled else 0.0,
+                    "presence_penalty": presence_penalty if not freq_disabled else 0.0,
+                    **extra_config
                 }
 
                 if config_manager.update_provider_config(provider, new_config):
-                    # Обновляем rate limit
+                    # Сохраняем общий rate limit (перезаписывается при любом сохранении)
                     config_manager.config["rate_limit"]["delay_between_requests"] = delay
                     config_manager.config["rate_limit"]["requests_per_minute"] = requests_per_minute
                     config_manager.save_config()
-
                     st.success(f"Настройки {provider} сохранены!")
                 else:
-                    st.error(f"Ошибка сохранения настроек {provider}")
+                    st.error(f"Ошибка при сохранении настроек {provider}")
 
     # Информация о доступных плейсхолдерах
     with st.expander("📋 Доступные плейсхолдеры для промптов"):
@@ -183,6 +223,14 @@ def show_ai_config_interface():
             height=100
         )
 
+        # Добавляем выбор провайдера специально для теста
+        test_provider = st.selectbox(
+            "Провайдер для теста:",
+            available_providers,
+            index=available_providers.index(default_provider),
+            key="test_provider_select"
+        )
+
         if st.button("Отправить тестовый запрос"):
             from ai_module import AIGenerator
             ai_generator = AIGenerator(config_manager)
@@ -191,18 +239,20 @@ def show_ai_config_interface():
                 result = ai_generator.generate_instruction(
                     test_prompt,
                     {},
-                    provider=default_provider,
+                    provider=test_provider,  # ← теперь берём из этого selectbox
                     num_variants=1
                 )[0]
 
                 if result["success"]:
                     st.success("✅ Запрос успешен!")
                     st.text_area("Ответ AI:", value=result["text"], height=150)
-
                     if "usage" in result:
                         usage = result["usage"]
                         st.caption(
-                            f"Токены: {usage.get('total_tokens', 0)} (prompt: {usage.get('prompt_tokens', 0)}, completion: {usage.get('completion_tokens', 0)})")
+                            f"Токены: {usage.get('total_tokens', 0)} "
+                            f"(prompt: {usage.get('prompt_tokens', 0)}, "
+                            f"completion: {usage.get('completion_tokens', 0)})"
+                        )
                 else:
                     st.error(f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}")
 

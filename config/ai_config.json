@@ -1,7 +1,7 @@
 {
   "providers": {
     "openai": {
-      "api_key": "sk-KmQn7stzLmSmPsBJRVpmqQ0eXwc9t31JzXEmoPksldVCnHeToE719oaSSOIH",
+      "api_key": "sk-BTSwPgls3yJL2JfjXbMeeUXgds2h1uo2ZcqINp55mxiKxZin8SQMaY0eSXty",
       "model": "gpt-4o-mini",
       "temperature": 0.7,
       "max_tokens": 2000,
@@ -17,11 +17,30 @@
       "top_p": 0.9,
       "frequency_penalty": 0.0,
       "presence_penalty": 0.0
+    },
+    "genapi_gemini": {
+      "api_key": "sk-KmQn7stzLmSmPsBJRVpmqQ0eXwc9t31JzXEmoPksldVCnHeToE719oaSSOIH",
+      "model": "gemini-2-5-flash-lite",
+      "temperature": 0.7,
+      "max_tokens": 2000,
+      "top_p": 0.9,
+      "frequency_penalty": 0.0,
+      "presence_penalty": 0.0,
+      "is_sync": true
+    },
+    "true_gemini": {
+      "api_key": "AIzaSyCyy52n3e-kVMNuKdbTAYshKB2lUk7r2l0",
+      "model": "gemini-2.5-flash",
+      "temperature": 0.7,
+      "max_tokens": 2000,
+      "top_p": 0.9,
+      "frequency_penalty": 0.0,
+      "presence_penalty": 0.0
     }
   },
-  "default_provider": "deepseek",
+  "default_provider": "genapi_gemini",
   "rate_limit": {
     "requests_per_minute": 30,
-    "delay_between_requests": 1.0
+    "delay_between_requests": 2.0
   }
 }

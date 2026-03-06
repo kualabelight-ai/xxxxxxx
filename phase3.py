@@ -32,14 +32,32 @@ def show_ai_variable_generator(block_id, var_name, var_data):
     st.markdown("### 🤖 Генерация AI-инструкций")
 
     # Выбор провайдера
+    available_providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
+
+    provider_labels = {
+        "openai": "OpenAI / GPT",
+        "deepseek": "DeepSeek",
+        "genapi_gemini": "Gemini через GenAPI (без VPN)",
+        "true_gemini": "True Gemini (Google, нужен VPN)"
+    }
+
+    default_provider = st.session_state.ai_config_manager.config.get("default_provider", "deepseek")
+
     provider = st.selectbox(
         "AI провайдер:",
-        ["openai", "deepseek"],
-        index=0 if st.session_state.ai_config_manager.config["default_provider"] == "openai" else 1,
+        available_providers,
+        format_func=lambda x: provider_labels.get(x, x),
+        index=available_providers.index(default_provider)
+        if default_provider in available_providers else 1,
         key=f"ai_provider_{block_id}_{var_name}"
     )
 
-    # Промпт для генерации
+    if provider == "true_gemini":
+        st.caption("⚠️ Для true_gemini нужен VPN / зарубежный IP")
+    elif provider == "genapi_gemini":
+        st.info("GenAPI Gemini — работает без VPN, оплата рублями")
+
+    # Промпт для генерации (без изменений)
     prompt_template = st.text_area(
         "Промпт для AI:",
         value=var_data.get("ai_prompt", ""),
@@ -48,7 +66,7 @@ def show_ai_variable_generator(block_id, var_name, var_data):
         help="Используйте {категория}, {характеристика}, {значение} для подстановки контекста"
     )
 
-    # Количество вариантов
+    # Количество вариантов (без изменений)
     num_variants = st.number_input(
         "Количество вариантов:",
         min_value=1,
@@ -682,7 +700,7 @@ class VariableManager:
 def main():
     st.set_page_config(page_title="Data Harvester Phase 3 - Редактирование блоков", layout="wide")
     local_css()
-    st.title("📝 Фаза 3: Редактирование блоков и шаблонов")
+    st.title("📝 Фаза 3: Редактирование блоков и шаблонов, НЕ ЗАБЫВАЕМ ПРО МАССОВУЮ ГЕНЕРАЦИЮ AI")
     st.markdown("---")
 
     # --- Инициализация менеджеров ---
@@ -747,21 +765,47 @@ def show_ai_variables_overview():
             for b_id, _, v_name, _ in ai_vars:
                 st.session_state[f"chk_{b_id}_{v_name}"] = False
             st.rerun()
+
+    # ── НОВОЕ: выбор провайдера для всей массовой генерации ──
     with col3:
-        if st.button("🚀 Массовая генерация", type="primary", key="mass_gen_ai", use_container_width=True):
-            selected = []
-            for b_id, _, v_name, _ in ai_vars:
-                if st.session_state.get(f"chk_{b_id}_{v_name}", False):
-                    selected.append((b_id, v_name))
-            if selected:
-                st.session_state.ai_mass_selected = selected
-                st.session_state.ai_mass_generation_requested = True
-                st.rerun()
-            else:
-                st.warning("Не выбрано ни одной переменной")
+        available_providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
+        provider_labels = {
+            "openai": "OpenAI / GPT",
+            "deepseek": "DeepSeek",
+            "genapi_gemini": "Gemini через GenAPI (без VPN)",
+            "true_gemini": "True Gemini (Google, нужен VPN)"
+        }
+
+        # Берём из session_state или дефолтный
+        mass_provider = st.session_state.get("mass_ai_provider", "deepseek")
+        mass_provider = st.selectbox(
+            "Провайдер для массовой генерации",
+            available_providers,
+            format_func=lambda x: provider_labels.get(x, x),
+            index=available_providers.index(mass_provider),
+            key="mass_ai_provider_select"
+        )
+
+        # Сохраняем выбор
+        st.session_state["mass_ai_provider"] = mass_provider
+
+        if mass_provider == "true_gemini":
+            st.caption("⚠️ Нужен VPN")
+
     with col4:
         st.caption("Выберите переменные для массовой генерации")
-
+    if st.button("🚀 Массовая генерация", type="primary", key="mass_gen_ai", use_container_width=True):
+        selected = []
+        for b_id, _, v_name, _ in ai_vars:
+            if st.session_state.get(f"chk_{b_id}_{v_name}", False):
+                selected.append((b_id, v_name))
+        if selected:
+            st.session_state.ai_mass_selected = selected
+            st.session_state.ai_mass_generation_requested = True
+            st.session_state.ai_mass_provider = mass_provider  # передаём в состояние
+            st.rerun()
+        else:
+            st.warning("Не выбрано ни одной переменной")
     st.divider()
 
     # --- Заголовки таблицы ---
@@ -836,6 +880,8 @@ def show_ai_variables_overview():
     # --- Массовая генерация (без изменений) ---
     if st.session_state.get("ai_mass_generation_requested", False):
         selected = st.session_state.get("ai_mass_selected", [])
+        mass_provider = st.session_state.get("ai_mass_provider", "deepseek")  # берём выбранный массовый
+
         if not selected:
             st.warning("Нет выбранных переменных")
             st.session_state.ai_mass_generation_requested = False
@@ -846,7 +892,7 @@ def show_ai_variables_overview():
                 status_text = st.empty()
                 results_log = []
                 for i, (b_id, v_name) in enumerate(selected):
-                    status_text.text(f"Обработка {i+1}/{len(selected)}: {b_id} / {v_name}")
+                    status_text.text(f"Обработка {i + 1}/{len(selected)}: {b_id} / {v_name}")
                     block = st.session_state.block_manager.get_block(b_id)
                     if block is None:
                         results_log.append({"block": b_id, "var": v_name, "success": 0, "errors": 1})
@@ -857,17 +903,23 @@ def show_ai_variables_overview():
                         results_log.append({"block": block.get("name", b_id), "var": v_name, "success": 0, "errors": 1})
                         progress_bar.progress((i + 1) / len(selected))
                         continue
-                    if block.get("block_type") == "characteristic":
-                        res = batch_generate_for_characteristic(b_id, v_name, var_data, block)
+
+                    # ── КЛЮЧЕВОЕ: используем mass_provider вместо var_data["ai_provider"]
+                    block_type = block.get("block_type", "other")
+                    if block_type == "characteristic":
+                        res = batch_generate_for_characteristic(b_id, v_name, var_data, block, provider=mass_provider)
                     else:
-                        res = batch_generate_for_other(b_id, v_name, var_data, block)
+                        res = batch_generate_for_other(b_id, v_name, var_data, block, provider=mass_provider)
+
                     results_log.append({
                         "block": block.get("name", b_id),
                         "var": v_name,
                         "success": res.get("success", 0),
-                        "errors": res.get("errors", 0)
+                        "errors": res.get("errors", 0),
+                        "used_provider": mass_provider
                     })
                     progress_bar.progress((i + 1) / len(selected))
+
                 progress_bar.empty()
                 status_text.empty()
                 total_success = sum(r["success"] for r in results_log)
@@ -875,7 +927,8 @@ def show_ai_variables_overview():
                 st.success(f"✅ Массовая генерация завершена. Успешно: {total_success}, ошибок: {total_errors}")
                 with st.expander("Подробности"):
                     for log in results_log:
-                        st.write(f"**{log['block']} / {log['var']}**: успех {log['success']}, ошибок {log['errors']}")
+                        st.write(
+                            f"**{log['block']} / {log['var']}**: успех {log['success']}, ошибок {log['errors']} (провайдер: {log['used_provider']})")
                 st.session_state.ai_instruction_manager.reload()
                 st.rerun()
 
@@ -1828,11 +1881,31 @@ def show_block_editor():
                 with st.expander(f"🤖 {var_name}", expanded=False):
                     with st.form(key=f"edit_ai_{selected_block_id}_{var_name}"):
                         desc = st.text_input("Описание", value=var_data.get("description", ""))
+                        available_providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
+
+                        provider_labels = {
+                            "openai": "OpenAI / GPT",
+                            "deepseek": "DeepSeek",
+                            "genapi_gemini": "Gemini через GenAPI (без VPN)",
+                            "true_gemini": "True Gemini (Google, нужен VPN)"
+                        }
+
+                        current_provider = var_data.get("ai_provider", "deepseek")
+
                         provider = st.selectbox(
                             "Провайдер",
-                            ["openai", "deepseek"],
-                            index=0 if var_data.get("ai_provider", "openai") == "openai" else 1
+                            available_providers,
+                            format_func=lambda x: provider_labels.get(x, x),
+                            index=available_providers.index(current_provider)
+                            if current_provider in available_providers else 1,
+                            key=f"ai_provider_{selected_block_id}_{var_name}"
                         )
+
+                        # Дополнительные подсказки
+                        if provider == "true_gemini":
+                            st.caption("⚠️ Требует VPN из России")
+                        elif provider == "genapi_gemini":
+                            st.info("Работает без VPN, оплата рублями")
                         num_variants = st.number_input(
                             "Количество вариантов",
                             min_value=1, max_value=10,
@@ -2682,10 +2755,14 @@ def show_variables_editor():
 
                         col_ai1, col_ai2 = st.columns(2)
                         with col_ai1:
+                            # Расширяем список доступных провайдеров
+                            available_ai_providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
+
                             ai_provider = st.selectbox(
                                 "AI провайдер:",
-                                ["openai", "deepseek"],
-                                index=0 if var_data.get("ai_provider", "openai") == "openai" else 1,
+                                available_ai_providers,
+                                index=available_ai_providers.index(var_data.get("ai_provider", "deepseek"))
+                                if var_data.get("ai_provider") in available_ai_providers else 1,
                                 key=f"ai_provider_{ai_var}_{tab_idx}"
                             )
 
@@ -2977,12 +3054,13 @@ def save_data_to_app_state():
     return False
 # ===== Новые функции для массовой генерации AI =====
 # ===== Новые функции для массовой генерации AI =====
-def batch_generate_for_characteristic(block_id, var_name, var_data, block):
+def batch_generate_for_characteristic(block_id, var_name, var_data, block, provider=None):
     """
     Генерирует AI-инструкции для characteristic-блока без UI.
     Возвращает словарь со статистикой: {'success': int, 'errors': int}
     """
     # Получаем данные из фазы 2
+    used_provider = provider or var_data.get("ai_provider", "deepseek")
     phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
     category = phase2_data.get('category', '')
     characteristics = st.session_state.get('loaded_data', {}).get('characteristics', [])
@@ -3016,7 +3094,7 @@ def batch_generate_for_characteristic(block_id, var_name, var_data, block):
                 }
                 try:
                     gen_results = st.session_state.ai_generator.generate_instruction(
-                        prompt_template, context, provider=provider, num_variants=1
+                        prompt_template, context, provider=used_provider, num_variants=1
                     )
                     if gen_results and gen_results[0].get("success"):
                         instruction = gen_results[0]["text"]
@@ -3055,11 +3133,12 @@ def batch_generate_for_characteristic(block_id, var_name, var_data, block):
     return {"success": success_count, "errors": error_count}
 
 
-def batch_generate_for_other(block_id, var_name, var_data, block):
+def batch_generate_for_other(block_id, var_name, var_data, block, provider=None):
     """
     Генерирует AI-инструкции для other-блока без UI.
     Возвращает статистику.
     """
+    used_provider = provider or var_data.get("ai_provider", "deepseek")
     phase2_data = st.session_state.get('phase2_data') or st.session_state.get('app_data', {}).get('phase2', {})
     category = phase2_data.get('category', '')
 
@@ -3079,7 +3158,7 @@ def batch_generate_for_other(block_id, var_name, var_data, block):
 
     try:
         gen_results = st.session_state.ai_generator.generate_instruction(
-            prompt_template, context, provider=provider, num_variants=num_variants
+            prompt_template, context, provider=used_provider, num_variants=1
         )
         successful = [r["text"] for r in gen_results if r.get("success")]
         if successful:

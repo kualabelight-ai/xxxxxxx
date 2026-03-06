@@ -138,12 +138,29 @@ class AIManager:
                 return cached[:num_variants]
 
         # Определяем провайдера
-        if model.startswith("gpt-"):
-            results = self._call_openai(prompt, model, num_variants, settings)
+        if model.startswith("gpt-") or model in ["gpt-4o-mini", "gpt-4-turbo-preview", "gpt-3.5-turbo"]:
+            results = self._call_openai(prompt, model, num_variants, settings)  # через gen-api, как было
+
         elif model.startswith("claude-"):
             results = self._call_anthropic(prompt, model, num_variants, settings)
+
         elif "deepseek" in model.lower():
             results = self._call_deepseek(prompt, model, num_variants, settings)
+
+
+        elif model.startswith("genapi-") or model.startswith("genapi_"):
+
+            # Gemini через gen-api.ru
+
+            results = self._call_genapi_gemini(prompt, model, num_variants, settings)
+
+
+        elif model.startswith("gemini-"):
+
+            # Настоящий Google Gemini
+
+            results = self._call_true_gemini(prompt, model, num_variants, settings)
+
         else:
             results = [f"Неизвестная модель: {model}"]
 
@@ -161,6 +178,122 @@ class AIManager:
 
         return results
 
+    def _call_genapi_gemini(self, prompt: str, model: str, n: int, settings: Dict) -> List[str]:
+        """Вызывает Gemini через GenAPI (синхронный режим)"""
+        api_key = self.config.get("genapi_api_key", "")
+        if not api_key:
+            return ["GenAPI ключ не настроен"]
+
+        # Модель без префикса "genapi_", например gemini-2-5-flash-lite
+        clean_model = model.replace("genapi_", "").replace("genapi-", "")
+
+        base_url = self.config.get("genapi_gemini_endpoint_base", "https://api.gen-api.ru/api/v1/networks")
+        url = f"{base_url}/{clean_model}"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        data = {
+            "messages": [
+                {"role": "system", "content": "Ты - опытный технический копирайтер и SEO-специалист."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": settings["temperature"],
+            "max_tokens": settings["max_tokens"],
+            "top_p": settings["top_p"],
+            "frequency_penalty": settings["frequency_penalty"],
+            "presence_penalty": settings["presence_penalty"],
+            "n": n,
+            "is_sync": True,
+            "stream": False,
+            "reasoning_effort": "none"
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=90)
+            response.raise_for_status()
+            result = response.json()
+
+            # Новый парсинг — актуальная структура gen-api (2026 год)
+            generated_texts = []
+            if "response" in result and isinstance(result["response"], list):
+                for item in result["response"]:
+                    message = item.get("message", {})
+                    content = message.get("content", "").strip()
+                    if content:
+                        generated_texts.append(content)
+
+            # Запасной вариант на случай старой структуры
+            if not generated_texts and "output" in result:
+                output = result["output"]
+                if isinstance(output, str):
+                    generated_texts = [output]
+                elif isinstance(output, dict) and "choices" in output:
+                    generated_texts = [
+                        ch.get("message", {}).get("content", "")
+                        for ch in output.get("choices", [])
+                    ]
+
+            if not generated_texts:
+                return [f"Не удалось извлечь текст из ответа GenAPI: {result}"]
+
+            # Возвращаем столько текстов, сколько запрошено (или меньше, если вернулось меньше)
+            return generated_texts[:n]
+
+        except requests.exceptions.RequestException as e:
+            error_msg = f"GenAPI Gemini ошибка HTTP: {str(e)}"
+            if hasattr(e, 'response') and e.response is not None:
+                error_msg += f" - {e.response.text[:200]}"  # обрезаем длинный ответ
+            return [error_msg]
+
+        except Exception as e:
+            return [f"GenAPI Gemini ошибка: {str(e)}"]
+    def _call_true_gemini(self, prompt: str, model: str, n: int, settings: Dict) -> List[str]:
+        """Вызывает официальный Google Gemini API"""
+        api_key = self.config.get("true_gemini_api_key", "")
+        if not api_key:
+            return ["Google Gemini API ключ не настроен"]
+
+        base_url = self.config.get("true_gemini_base_url", "https://generativelanguage.googleapis.com/v1beta")
+        url = f"{base_url}/models/{model}:generateContent"
+        params = {"key": api_key}
+
+        headers = {"Content-Type": "application/json"}
+
+        # Конвертация в формат Google (нет system role → всё в user/model)
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+
+        data = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": settings["temperature"],
+                "maxOutputTokens": settings["max_tokens"],
+                "topP": settings["top_p"],
+                # frequency_penalty и presence_penalty → нет прямых аналогов, можно игнорировать или использовать topK
+            }
+        }
+
+        try:
+            results = []
+            for _ in range(n):
+                response = requests.post(url, headers=headers, json=data, params=params, timeout=90)
+                response.raise_for_status()
+                resp_json = response.json()
+
+                # Путь к тексту в официальном Gemini API
+                try:
+                    text = resp_json["candidates"][0]["content"]["parts"][0]["text"]
+                    results.append(text)
+                except (KeyError, IndexError):
+                    return [f"Не удалось извлечь текст: {resp_json}"]
+
+            return results
+
+        except Exception as e:
+            return [f"True Gemini ошибка: {str(e)} — возможно нужен VPN / зарубежный IP"]
     def _call_openai(self, prompt: str, model: str, n: int, settings: Dict) -> List[str]:
         """Вызывает OpenAI через GenAPI"""
         api_key = self.config.get("openai_api_key", "")
@@ -275,6 +408,12 @@ class AIManager:
             "gpt-4o-mini": "GPT-4o mini",
             "gpt-4-turbo-preview": "GPT-4 Turbo",
             "gpt-3.5-turbo": "GPT-3.5 Turbo",
+            # Gemini через gen-api
+            "gemini-2-5-flash-lite": "Gemini 2.5 Flash-Lite (GenAPI)",
+            "gemini-2-5-flash": "Gemini 2.5 Flash (GenAPI)",
+            # Настоящий Gemini (требует VPN + ключ)
+            "gemini-2.5-flash": "Gemini 2.5 Flash (Google direct)",
+            "gemini-1.5-pro": "Gemini 1.5 Pro (Google direct)",
             # Anthropic (прямое API)
             "claude-3-opus": "Claude 3 Opus",
             "claude-3-sonnet": "Claude 3 Sonnet",
@@ -300,7 +439,15 @@ class AIManager:
             for model, desc in models.items():
                 if "deepseek" in model:
                     available[model] = desc
+        if self.config.get("genapi_api_key"):
+            for m in ["gemini-2-5-flash-lite", "gemini-2-5-flash"]:
+                if m in models:
+                    available[m] = models[m]
 
+        if self.config.get("true_gemini_api_key"):
+            for m in ["gemini-2.5-flash", "gemini-1.5-pro"]:
+                if m in models:
+                    available[m] = models[m]
         return available
 
     def clear_cache(self):
