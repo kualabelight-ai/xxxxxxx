@@ -14,7 +14,7 @@ def show_ai_config_interface():
     st.markdown("---")
 
     # Выбор провайдера по умолчанию
-    available_providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
+    available_providers = ["openai", "deepseek", "genapi_gemini", "true_gemini", "grok"]
     current_default = config_manager.config.get("default_provider", "deepseek")
 
     default_provider = st.selectbox(
@@ -28,7 +28,7 @@ def show_ai_config_interface():
         st.success(f"Провайдер по умолчанию изменен на {default_provider}")
 
     # Настройки для каждого провайдера
-    providers = ["openai", "deepseek", "genapi_gemini", "true_gemini"]
+    providers = ["openai", "deepseek", "genapi_gemini", "true_gemini", "grok"]
 
     # Создаём вкладки с красивыми названиями
     tabs = st.tabs([p.replace("_", " ").title() for p in providers])
@@ -57,7 +57,9 @@ def show_ai_config_interface():
                     "gemini-2-5-flash-lite",
                     "gemini-2-5-flash",
                     "gemini-3-1-pro",
-                    "gemini-flash-image"
+                    "gemini-flash-image",
+                    "gemini-3-flash"
+
                 ]
             elif provider == "true_gemini":
                 models = [
@@ -65,6 +67,10 @@ def show_ai_config_interface():
                     "gemini-2.5-flash-lite",
                     "gemini-1.5-pro",
                     "gemini-1.5-flash"
+                ]
+            elif provider == "grok":
+                models = [
+                    "grok-4-1"
                 ]
             else:
                 models = ["неизвестный провайдер"]
@@ -189,7 +195,7 @@ def show_ai_config_interface():
                     st.error(f"Ошибка при сохранении настроек {provider}")
 
     # Информация о доступных плейсхолдерах
-    with st.expander("📋 Доступные плейсхолдеры для промптов"):
+    '''with st.expander("📋 Доступные плейсхолдеры для промптов"):
         st.markdown("""
         **Для характеристик:**
         - `{категория}` - название категории товара
@@ -213,7 +219,7 @@ def show_ai_config_interface():
 
         Каждый тезис должен начинаться с глагола-запроса (опиши, укажи, поясни, объясни, покажи, расскажи, оцени, сравни, определи).
         ```
-        """)
+        """)'''
 
     # Тестовый вызов API
     with st.expander("🧪 Тестовый вызов API"):

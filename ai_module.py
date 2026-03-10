@@ -216,6 +216,128 @@ class AIGenerator:
                 "text": ""
             }
 
+    def call_grok_genapi(
+            self, prompt: str, config: Dict, num_variants: int
+    ) -> List[Dict]:
+        """Вызов Grok-4.1 через gen-api.ru (синхронный режим)"""
+        results = []
+
+        try:
+            api_key = config["api_key"]
+            if not api_key:
+                raise ValueError("API ключ GenAPI не настроен")
+
+            # Можно передать конкретную версию, например grok-4-1-fast-reasoning
+            model = config.get("model", "grok-4-1")  # или "grok-4-1-fast-reasoning"
+            url = f"https://api.gen-api.ru/api/v1/networks/{model}"
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+
+            payload = {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Ты - опытный технический копирайтер и SEO-специалист."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "temperature": config.get("temperature", 0.7),
+                "max_tokens": config.get("max_tokens", 2000),
+                "top_p": config.get("top_p", 0.95),  # у Grok часто дефолт 1.0, но 0.95 обычно ок
+                "frequency_penalty": config.get("frequency_penalty", 0.0),
+                "presence_penalty": config.get("presence_penalty", 0.0),
+                "n": num_variants,
+                "is_sync": config.get("is_sync", True),
+                "stream": config.get("stream", False),
+                # "stop": [...],           # если нужно — можно добавить
+                # "seed": 42,              # для воспроизводимости
+            }
+
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
+            response.raise_for_status()
+            data = response.json()
+
+            # ────────────────────────────────────────────────
+            # Парсинг ответа — самые вероятные варианты на 2026 год для gen-api
+            # ────────────────────────────────────────────────
+            generated_texts = []
+
+            # Вариант 1: OpenAI-совместимый формат (самый вероятный)
+            if "choices" in data and isinstance(data["choices"], list):
+                for choice in data["choices"]:
+                    msg = choice.get("message", {})
+                    content = msg.get("content")
+                    if content:
+                        if isinstance(content, str):
+                            generated_texts.append(content.strip())
+                        elif isinstance(content, list):
+                            text = " ".join(
+                                p.get("text", "") for p in content
+                                if p.get("type") == "text"
+                            ).strip()
+                            if text:
+                                generated_texts.append(text)
+
+            # Вариант 2: просто "response" как список
+            elif "response" in data and isinstance(data["response"], list):
+                for item in data["response"]:
+                    if isinstance(item, dict):
+                        content = item.get("content") or item.get("text") or item.get("message", {}).get("content")
+                        if content:
+                            if isinstance(content, str):
+                                generated_texts.append(content.strip())
+                            elif isinstance(content, list):
+                                text = " ".join(
+                                    p.get("text", "") for p in content if p.get("type") == "text"
+                                ).strip()
+                                if text:
+                                    generated_texts.append(text)
+
+            # Вариант 3: старый / запасной — "output"
+            if not generated_texts and "output" in data:
+                output = data["output"]
+                if isinstance(output, str):
+                    generated_texts = [output.strip()]
+                elif isinstance(output, list):
+                    generated_texts = [
+                        x.strip() if isinstance(x, str) else
+                        " ".join(p.get("text", "") for p in x if isinstance(p, dict) and p.get("type") == "text")
+                        for x in output if x
+                    ]
+
+            if not generated_texts:
+                full_resp_str = json.dumps(data, ensure_ascii=False, indent=2)
+                raise ValueError(
+                    f"Не удалось извлечь текст из ответа GenAPI (Grok).\n"
+                    f"Полный ответ:\n{full_resp_str}"
+                )
+
+            # Формируем результаты
+            for i, text in enumerate(generated_texts[:num_variants]):
+                results.append({
+                    "success": True,
+                    "text": text,
+                    "variant": i + 1,
+                    "model": model,
+                    "provider": "genapi_grok"
+                })
+
+        except Exception as e:
+            results.append({
+                "success": False,
+                "error": f"GenAPI Grok ошибка: {str(e)}",
+                "text": "",
+                "variant": 1
+            })
+
+        return results
     def _call_genapi_gemini(self, prompt: str, config: Dict, num_variants: int) -> List[Dict]:
         """Вызов Gemini через gen-api.ru (синхронный режим)"""
         results = []
@@ -236,8 +358,14 @@ class AIGenerator:
 
             payload = {
                 "messages": [
-                    {"role": "system", "content": "Ты - опытный технический копирайтер и SEO-специалист."},
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "system",
+                        "content": [{"type": "text", "text": "Ты - опытный технический копирайтер и SEO-специалист."}]
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}]
+                    }
                 ],
                 "temperature": config.get("temperature", 0.7),
                 "max_tokens": config.get("max_tokens", 2000),
@@ -247,8 +375,9 @@ class AIGenerator:
                 "n": num_variants,
                 "is_sync": config.get("is_sync", True),
                 "stream": config.get("stream", False),
-                "reasoning_effort": "none"
+                #"reasoning_effort": "none"
             }
+
 
             response = requests.post(url, headers=headers, json=payload, timeout=90)
             response.raise_for_status()
@@ -256,30 +385,63 @@ class AIGenerator:
 
             # Парсинг ответа (наиболее вероятные варианты по документации gen-api)
             generated_texts = []
+
             if "response" in data and isinstance(data["response"], list):
                 for item in data["response"]:
-                    if "message" in item and "content" in item["message"]:
-                        content = item["message"]["content"].strip()
+                    # Вариант 1: прямой message (как в gemini-2-5-flash)
+                    if "message" in item:
+                        content = item["message"].get("content")
                         if content:
-                            generated_texts.append(content)
+                            if isinstance(content, str):
+                                generated_texts.append(content.strip())
+                            elif isinstance(content, list):  # на случай content как массив
+                                text = " ".join(
+                                    p.get("text", "") for p in content if p.get("type") == "text"
+                                ).strip()
+                                if text:
+                                    generated_texts.append(text)
+
+                    # Вариант 2: choices внутри item (как в gemini-3-1-pro)
+                    if "choices" in item and isinstance(item["choices"], list):
+                        for choice in item["choices"]:
+                            msg = choice.get("message", {})
+                            content = msg.get("content")
+                            if content:
+                                if isinstance(content, str):
+                                    generated_texts.append(content.strip())
+                                elif isinstance(content, list):
+                                    text = " ".join(
+                                        p.get("text", "") for p in content if p.get("type") == "text"
+                                    ).strip()
+                                    if text:
+                                        generated_texts.append(text)
+
+            # Дополнительный запасной путь (output)
+            if not generated_texts and "output" in data:
+                output = data["output"]
+                if isinstance(output, str):
+                    generated_texts = [output.strip()]
+                elif isinstance(output, list):
+                    generated_texts = [
+                        (x.strip() if isinstance(x, str) else
+                         " ".join(p.get("text", "") for p in x if isinstance(p, dict) and p.get("type") == "text"))
+                        for x in output if x
+                    ]
 
             if not generated_texts:
-                # запасной вариант на случай старой структуры
-                if "output" in data:
-                    output = data["output"]
-                    if isinstance(output, str):
-                        generated_texts = [output]
-                    elif isinstance(output, dict) and "choices" in output:
-                        generated_texts = [
-                            ch.get("message", {}).get("content", "")
-                            for ch in output.get("choices", [])
-                        ]
-                    elif isinstance(output, dict) and "content" in output:
-                        generated_texts = [output["content"]]
+                # Для отладки — покажи полный ответ в ошибке
+                full_resp_str = json.dumps(data, ensure_ascii=False, indent=2)
+                raise ValueError(f"Не удалось извлечь текст из ответа GenAPI.\nПолный ответ:\n{full_resp_str}")
 
-            if not generated_texts:
-                raise ValueError(f"Не удалось извлечь текст из ответа GenAPI: {data}")
-
+            # Добавляем результаты (как было)
+            for i, text in enumerate(generated_texts[:num_variants]):
+                results.append({
+                    "success": True,
+                    "text": text,
+                    "variant": i + 1,
+                    "model": config.get("model"),
+                    "provider": "genapi_gemini"
+                })
             # дальше как было
             for i, text in enumerate(generated_texts[:num_variants]):
                 results.append({

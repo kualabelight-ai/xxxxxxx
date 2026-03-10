@@ -33,12 +33,19 @@
       "model": "gemini-2.5-flash",
       "temperature": 0.7,
       "max_tokens": 2000,
+      "top_p": 0.9
+    },
+    "grok": {
+      "api_key": "sk-BTSwPgls3yJL2JfjXbMeeUXgds2h1uo2ZcqINp55mxiKxZin8SQMaY0eSXty",
+      "model": "grok-4-1",
+      "temperature": 0.7,
+      "max_tokens": 2000,
       "top_p": 0.9,
       "frequency_penalty": 0.0,
       "presence_penalty": 0.0
     }
   },
-  "default_provider": "genapi_gemini",
+  "default_provider": "openai",
   "rate_limit": {
     "requests_per_minute": 30,
     "delay_between_requests": 2.0

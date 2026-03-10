@@ -178,6 +178,129 @@ class AIManager:
 
         return results
 
+    def _call_genapi_grok(self, prompt: str, model: str, n: int, settings: Dict) -> List[str]:
+        """Вызывает Grok через GenAPI (синхронный режим)"""
+        api_key = self.config.get("genapi_api_key", "")
+        if not api_key:
+            return ["GenAPI ключ не настроен"]
+
+        # Убираем префиксы, если они есть
+        clean_model = model.replace("genapi_", "").replace("genapi-", "")
+        # Примеры ожидаемых имён: grok-4-1, grok-4, grok-4-1-fast-reasoning, grok-3 и т.д.
+        # Рекомендую передавать уже чистое имя, например "grok-4-1"
+
+        base_url = self.config.get("genapi_grok_endpoint_base", "https://api.gen-api.ru/api/v1/networks")
+        url = f"{base_url}/{clean_model}"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        data = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Ты - опытный технический копирайтер и SEO-специалист."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": settings["temperature"],
+            "max_tokens": settings["max_tokens"],
+            "top_p": settings["top_p"],
+            "frequency_penalty": settings["frequency_penalty"],
+            "presence_penalty": settings["presence_penalty"],
+            "n": n,
+            "is_sync": True,
+            "stream": False,
+            # "stop": ["\n\n"],      # если нужно — можно добавить
+            # "seed": 42,            # для воспроизводимости
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=120)
+            response.raise_for_status()
+            result = response.json()
+
+            # ────────────────────────────────────────────────
+            # Парсинг — наиболее вероятные форматы на gen-api в 2026 году
+            # ────────────────────────────────────────────────
+            generated_texts = []
+
+            # Самый частый формат (OpenAI-совместимый)
+            if "choices" in result and isinstance(result["choices"], list):
+                for choice in result["choices"]:
+                    message = choice.get("message", {})
+                    content = message.get("content")
+                    if content:
+                        if isinstance(content, str):
+                            generated_texts.append(content.strip())
+                        elif isinstance(content, list):
+                            # на случай content как массив частей
+                            text_parts = [
+                                part.get("text", "")
+                                for part in content
+                                if part.get("type") == "text"
+                            ]
+                            generated_texts.append(" ".join(text_parts).strip())
+
+            # Альтернатива: "response" как список
+            elif "response" in result and isinstance(result["response"], list):
+                for item in result["response"]:
+                    if isinstance(item, dict):
+                        # разные возможные ключи
+                        content = (
+                                item.get("content") or
+                                item.get("text") or
+                                item.get("message", {}).get("content")
+                        )
+                        if content:
+                            if isinstance(content, str):
+                                generated_texts.append(content.strip())
+                            elif isinstance(content, list):
+                                text = " ".join(
+                                    p.get("text", "") for p in content
+                                    if isinstance(p, dict) and p.get("type") == "text"
+                                ).strip()
+                                if text:
+                                    generated_texts.append(text)
+
+            # Запасной вариант — "output"
+            if not generated_texts and "output" in result:
+                output = result["output"]
+                if isinstance(output, str):
+                    generated_texts = [output.strip()]
+                elif isinstance(output, list):
+                    for o in output:
+                        if isinstance(o, str):
+                            generated_texts.append(o.strip())
+                        elif isinstance(o, dict):
+                            content = o.get("content") or o.get("text")
+                            if content and isinstance(content, str):
+                                generated_texts.append(content.strip())
+
+            if not generated_texts:
+                full_resp = json.dumps(result, ensure_ascii=False, indent=2)
+                raise ValueError(
+                    f"Не удалось извлечь сгенерированный текст из ответа GenAPI.\n"
+                    f"Полный ответ:\n{full_resp}"
+                )
+
+            # Ограничиваем количество возвращаемых вариантов
+            return generated_texts[:n]
+
+        except requests.exceptions.RequestException as e:
+            error_msg = f"GenAPI Grok ошибка HTTP: {str(e)}"
+            if hasattr(e, 'response') and e.response is not None:
+                error_msg += f" - {e.response.text[:300]}"
+            return [error_msg]
+
+        except Exception as e:
+            return [f"GenAPI Grok ошибка: {str(e)}"]
     def _call_genapi_gemini(self, prompt: str, model: str, n: int, settings: Dict) -> List[str]:
         """Вызывает Gemini через GenAPI (синхронный режим)"""
         api_key = self.config.get("genapi_api_key", "")
@@ -198,8 +321,14 @@ class AIManager:
 
         data = {
             "messages": [
-                {"role": "system", "content": "Ты - опытный технический копирайтер и SEO-специалист."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": "Ты - опытный технический копирайтер и SEO-специалист."}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt}]
+                }
             ],
             "temperature": settings["temperature"],
             "max_tokens": settings["max_tokens"],
@@ -208,8 +337,8 @@ class AIManager:
             "presence_penalty": settings["presence_penalty"],
             "n": n,
             "is_sync": True,
-            "stream": False,
-            "reasoning_effort": "none"
+            "stream": False
+            # reasoning_effort лучше убрать, если не нужен
         }
 
         try:
@@ -219,26 +348,53 @@ class AIManager:
 
             # Новый парсинг — актуальная структура gen-api (2026 год)
             generated_texts = []
-            if "response" in result and isinstance(result["response"], list):
-                for item in result["response"]:
-                    message = item.get("message", {})
-                    content = message.get("content", "").strip()
-                    if content:
-                        generated_texts.append(content)
 
-            # Запасной вариант на случай старой структуры
-            if not generated_texts and "output" in result:
-                output = result["output"]
+            if "response" in data and isinstance(data["response"], list):
+                for item in data["response"]:
+                    # Вариант 1: прямой message (как в gemini-2-5-flash)
+                    if "message" in item:
+                        content = item["message"].get("content")
+                        if content:
+                            if isinstance(content, str):
+                                generated_texts.append(content.strip())
+                            elif isinstance(content, list):  # на случай content как массив
+                                text = " ".join(
+                                    p.get("text", "") for p in content if p.get("type") == "text"
+                                ).strip()
+                                if text:
+                                    generated_texts.append(text)
+
+                    # Вариант 2: choices внутри item (как в gemini-3-1-pro)
+                    if "choices" in item and isinstance(item["choices"], list):
+                        for choice in item["choices"]:
+                            msg = choice.get("message", {})
+                            content = msg.get("content")
+                            if content:
+                                if isinstance(content, str):
+                                    generated_texts.append(content.strip())
+                                elif isinstance(content, list):
+                                    text = " ".join(
+                                        p.get("text", "") for p in content if p.get("type") == "text"
+                                    ).strip()
+                                    if text:
+                                        generated_texts.append(text)
+
+            # Дополнительный запасной путь (output)
+            if not generated_texts and "output" in data:
+                output = data["output"]
                 if isinstance(output, str):
-                    generated_texts = [output]
-                elif isinstance(output, dict) and "choices" in output:
+                    generated_texts = [output.strip()]
+                elif isinstance(output, list):
                     generated_texts = [
-                        ch.get("message", {}).get("content", "")
-                        for ch in output.get("choices", [])
+                        (x.strip() if isinstance(x, str) else
+                         " ".join(p.get("text", "") for p in x if isinstance(p, dict) and p.get("type") == "text"))
+                        for x in output if x
                     ]
 
             if not generated_texts:
-                return [f"Не удалось извлечь текст из ответа GenAPI: {result}"]
+                # Для отладки — покажи полный ответ в ошибке
+                full_resp_str = json.dumps(data, ensure_ascii=False, indent=2)
+                raise ValueError(f"Не удалось извлечь текст из ответа GenAPI.\nПолный ответ:\n{full_resp_str}")
 
             # Возвращаем столько текстов, сколько запрошено (или меньше, если вернулось меньше)
             return generated_texts[:n]
