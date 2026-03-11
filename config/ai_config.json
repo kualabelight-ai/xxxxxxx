@@ -10,7 +10,7 @@
       "presence_penalty": 0.0
     },
     "deepseek": {
-      "api_key": "sk-d85c8d04e53742aab4395a8c034474aa",
+      "api_key":",
       "model": "deepseek-chat",
       "temperature": 0.7,
       "max_tokens": 2000,
@@ -29,7 +29,7 @@
       "is_sync": true
     },
     "true_gemini": {
-      "api_key": "AIzaSyCyy52n3e-kVMNuKdbTAYshKB2lUk7r2l0",
+      "api_key": "",
       "model": "gemini-2.5-flash",
       "temperature": 0.7,
       "max_tokens": 2000,
@@ -50,4 +50,5 @@
     "requests_per_minute": 30,
     "delay_between_requests": 2.0
   }
+
 }
