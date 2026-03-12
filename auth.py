@@ -317,6 +317,9 @@ def login_form():
                     st.session_state.pop("2fa_user", None)
                     st.session_state.pop("2fa_password", None)
                     st.success("Вход выполнен успешно!")
+                    from state_manager import save_user_state
+                    save_user_state()
+                    st.session_state.last_auto_save = datetime.now()
                     st.rerun()
                 else:
                     st.error(msg)
@@ -339,6 +342,12 @@ def login_form():
                 st.session_state["user_id"] = user["id"]
                 st.session_state["username"] = user["username"]
                 st.success("Вход выполнен успешно!")
+
+                from state_manager import save_user_state
+                save_user_state()                     # ← обязательно здесь
+                st.session_state.last_auto_save = datetime.now()
+                st.rerun()
+
                 st.rerun()
             elif msg == "REQUIRE_2FA":
                 # Запоминаем пользователя для второго этапа
@@ -370,8 +379,12 @@ def logout():
 
 # -------------------- Интерфейс профиля (смена пароля, 2FA) --------------------
 def profile_page():
+
     st.sidebar.title(f"👤 {st.session_state['username']}")
     with st.sidebar.expander("Настройки профиля"):
+        if st.button("← Закрыть профиль", type="secondary"):
+            st.session_state.show_profile = False
+            st.rerun()
         if st.button("Сменить пароль"):
             st.session_state["show_change_password"] = True
         if st.button("Двухфакторная аутентификация"):

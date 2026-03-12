@@ -2069,3 +2069,22 @@ asyncio.exceptions.CancelledError
 2026-03-11 16:25:46,308 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
 2026-03-11 16:25:51,991 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
 2026-03-11 16:25:57,893 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-12 11:07:01,354 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:08:31,270 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:08:41,695 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:34:08,311 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:35:15,282 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:55:16,791 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:55:40,555 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:56:15,889 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:56:42,509 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 11:59:36,056 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 12:03:13,306 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 12:04:54,916 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 12:06:12,338 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 12:07:36,886 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown
+2026-03-12 12:22:21,087 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-12 12:22:31,159 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-12 12:22:43,356 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-12 12:22:58,468 - INFO - HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-12 12:35:54,302 - INFO - Login attempt - User: kek - Status: SUCCESS - IP: unknown

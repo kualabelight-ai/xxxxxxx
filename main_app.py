@@ -6,7 +6,7 @@ from datetime import datetime
 from styles import load_css
 import auth
 # --- CSS стили для всего приложения ---
-
+import state_manager
 st.set_page_config(
         page_title="Data Harvester Pro",
         layout="wide",
@@ -155,44 +155,112 @@ class AppState:
 # --- Главное приложение ---
 
 def main():
-    # Проверка аутентификации
+    # ──────────────────────────────────────────────────────────────
+    # 1. Восстанавливаем авторизацию ИЗ ФАЙЛА САМОЕ ПЕРВОЕ ДЕЙСТВИЕ
+    # ──────────────────────────────────────────────────────────────
+    restored = False
+    if "session_restored" not in st.session_state:
+        # Пытаемся восстановить без проверки user_id заранее
+        # (если user_id ещё нет — функция должна это обработать)
+        restored = state_manager.load_user_state()
+        st.session_state.session_restored = True
+
+    # Отладка — сразу покажем, что получилось после попытки восстановления
+    st.write("DEBUG: после load_user_state() → authenticated =",
+             st.session_state.get("authenticated", False))
+    st.write("DEBUG: user_id =", st.session_state.get("user_id", "нет"))
+    st.write("DEBUG: username =", st.session_state.get("username", "нет"))
+
+    # 2. Если всё ещё не авторизован — показываем форму
     if not st.session_state.get("authenticated", False):
         auth.login_form()
         return
 
-    # Проверка статуса пользователя
+    # 3. Здесь уже авторизован — проверяем approved
     try:
         with auth.get_db() as conn:
             user_status = conn.execute(
                 "SELECT status FROM users WHERE id = ?",
                 (st.session_state["user_id"],)
             ).fetchone()
-
             if not user_status or user_status["status"] != "approved":
-                st.error("Ваш доступ к приложению отозван. Обратитесь к администратору.")
+                st.error("Ваш доступ отозван...")
                 auth.logout()
                 return
     except Exception as e:
-        st.error("Ошибка проверки доступа. Пожалуйста, войдите снова.")
+        st.error(f"Ошибка проверки доступа: {e}")
         auth.logout()
         return
 
-    # Загружаем стили
+    # 4. Тост только если восстановили из файла
+    if restored:
+        st.toast("Сессия восстановлена из файла", icon="🔄")
+
+
+    # ─── Дальше идёт весь остальной код приложения ───
     load_css()
 
     # Верхняя панель
-    col_logo, col_ai, col_user = st.columns([5, 1, 1])
+    col_logo, col_ai, col_reset, col_user = st.columns([5, 1, 1, 1])   # ← добавили ещё одну колонку
     with col_logo:
         st.markdown("<h1>📀 DH Data Harvester Pro</h1>", unsafe_allow_html=True)
     with col_ai:
         if st.button("⚙️ AI", help="Настройки AI"):
             st.session_state.show_ai_config = True
             st.rerun()
+
+
+    # ─── НОВАЯ КНОПКА СБРОСА ────────────────────────────────────────────────
+    with col_reset:
+        if st.button("🗑️", help="Сбросить проект (очистить прогресс)"):
+            with st.spinner("Сброс состояния..."):
+                try:
+                    # 1. Удаляем файл сохранения (самое важное!)
+                    path = state_manager.get_user_state_path()
+                    if path.exists():
+                        path.unlink(missing_ok=True)
+                        st.toast("Файл сохранения удалён", icon="🗑️")
+
+                    # 2. Принудительно очищаем ВСЕ возможные ключи
+                    keys_to_reset = [
+                        "current_phase",
+                        "app_data",
+                        "state_restored",
+                        "session_restored",
+                        "last_auto_save",
+                        # добавь сюда любые другие ключи, которые используешь в проекте
+                    ]
+
+                    for key in list(st.session_state.keys()):  # ← берём копию списка!
+                        if key in keys_to_reset or key.startswith("phase"):  # на всякий случай
+                            del st.session_state[key]
+
+                    # 3. Явно устанавливаем чистое состояние
+                    st.session_state.current_phase = 1
+                    st.session_state.app_data = {
+                        'phase1': {}, 'phase2': {}, 'phase3': {},
+                        'phase4': {}, 'phase5': {}, 'phase6': {},
+                        'category': '',
+                        'project_name': 'Новый проект'
+                    }
+
+                    # 4. Запрещаем автозагрузку старого состояния в ближайший rerun
+                    st.session_state.session_restored = False
+                    st.session_state.state_restored = False
+
+                    st.success("Проект сброшен. Переходим на фазу 1...", icon="✅")
+
+                    # 5. Небольшая задержка + rerun (иногда помогает Streamlit'у применить изменения)
+                    import time
+                    time.sleep(0.4)  # 400 мс — обычно достаточно
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Ошибка сброса: {str(e)}")
     with col_user:
         if st.button("👤 Профиль"):
             st.session_state.show_profile = True
             st.rerun()
-
     # Отображение профиля, если нужно
     if st.session_state.get("show_admin_panel", False):
         auth.admin_panel()
@@ -411,6 +479,23 @@ def main():
                     st.rerun()
             else:
                 st.info("⚠️ Завершите текущую фазу, чтобы перейти дальше")
+    now = datetime.now()
+
+    if "last_auto_save" not in st.session_state:
+        st.session_state.last_auto_save = now
+
+    delta = (now - st.session_state.last_auto_save).total_seconds()
+    if delta > 75:  # 75 секунд — комфортный баланс
+        state_manager.save_user_state()
+        st.session_state.last_auto_save = now
+
+    # Дополнительно: сохраняем при смене фазы (очень полезно!)
+    if "previous_phase" not in st.session_state:
+        st.session_state.previous_phase = st.session_state.current_phase
+
+    if st.session_state.current_phase != st.session_state.previous_phase:
+        state_manager.save_user_state()
+        st.session_state.previous_phase = st.session_state.current_phase
     # =================================================
 
 if __name__ == "__main__":
