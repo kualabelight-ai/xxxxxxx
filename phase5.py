@@ -5,8 +5,9 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import pandas as pd
 from ai_module import AIGenerator, AIConfigManager
-
-
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 # --- CSS стили для фазы 5 ---
 def local_css():
     st.markdown("""
@@ -497,40 +498,48 @@ class Phase5DataManager:
 class GenerationManager:
     def __init__(self, data_manager: Phase5DataManager):
         self.data_manager = data_manager
-        self._should_stop = False  # Флаг для остановки
-        self._should_pause = False  # Флаг для паузы
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._worker_thread = None
+        self._result_queue = queue.Queue()  # для безопасной передачи результатов в основной поток
 
     def start_generation(self, batch_size=10):
-        """Начать генерацию текстов"""
-        # Проверяем, не запущена ли уже генерация
-        if st.session_state.phase5['generation_status'] == 'running':
-            st.warning("Генерация уже запущена!")
+        if st.session_state.phase5.get('generation_status') in ['running', 'starting']:
+            st.warning("Генерация уже запущена или запускается")
             return
 
-        # Проверяем, выбраны ли промпты
         selected_prompts = self.data_manager.get_prompts_for_generation()
         if not selected_prompts:
             st.error("Не выбрано ни одного промпта для генерации!")
             return
 
-        # Проверяем настройки AI
-        if 'ai_config_manager' not in st.session_state:
-            st.session_state.ai_config_manager = AIConfigManager()
+        self._stop_event.clear()
+        self._pause_event.clear()
 
-        config_manager = st.session_state.ai_config_manager
-        provider = st.session_state.phase5['generation_settings']['provider']
-        provider_config = config_manager.get_provider_config(provider)
-
-        if not provider_config.get('api_key'):
-            st.error(f"API ключ для провайдера {provider} не настроен!")
-            st.info("Настройте AI в боковой панели или в разделе настроек")
+        # ─── Подготавливаем всё, что нужно потоку, в ГЛАВНОМ потоке ───
+        config_manager = st.session_state.get('ai_config_manager')
+        if config_manager is None:
+            st.error("ai_config_manager не инициализирован в session_state!")
             return
 
-        # Настраиваем генерацию
+        ai_generator = AIGenerator(config_manager)  # создаём здесь, один раз
+
+        worker_data = {
+            "generation_queue": [p.get('phase5_id') for p in selected_prompts],
+            "settings": st.session_state.phase5['generation_settings'].copy(),
+            "prompts": {
+                p.get('phase5_id'): {
+                    'prompt': p.get('prompt', ''),
+                    # добавь другие нужные поля промпта, если используются
+                } for p in selected_prompts
+            },
+            "ai_generator": ai_generator,          # ← передаём готовый объект
+        }
+
         st.session_state.phase5.update({
             'generation_status': 'running',
             'generation_start_time': datetime.now().isoformat(),
-            'generation_queue': [p.get('phase5_id') for p in selected_prompts],
+            'generation_queue': worker_data["generation_queue"].copy(),
             'current_index': 0,
             'generation_running': True,
             'current_batch': 0,
@@ -538,159 +547,144 @@ class GenerationManager:
             'error_message': None
         })
 
-        # Сбрасываем флаги управления
-        self._should_stop = False
-        self._should_pause = False
+        self._worker_thread = threading.Thread(
+            target=self._generation_worker,
+            args=(worker_data,),
+            daemon=True
+        )
+        self._worker_thread.start()
 
-        st.success(f"🚀 Запущена генерация для {len(selected_prompts)} промптов!")
+        st.success(f"🚀 Генерация запущена ({len(selected_prompts)} промптов)")
         st.rerun()
 
-    def run_one_generation_step(self):
-        """Выполнить один шаг генерации"""
-        phase5 = st.session_state.phase5
+    # Полностью замени _generation_worker
 
-        if not phase5['generation_running']:
-            return
+    def _generation_worker(self, worker_data):
+        queue_list    = worker_data["generation_queue"]
+        settings      = worker_data["settings"]
+        prompts       = worker_data["prompts"]
+        ai_generator  = worker_data["ai_generator"]
 
-        if phase5['current_index'] >= len(phase5['generation_queue']):
-            phase5['generation_status'] = 'completed'
-            phase5['generation_running'] = False
-            phase5['generation_end_time'] = datetime.now().isoformat()
-            return
+        current_index = 0
 
-        if self._should_stop:
-            phase5['generation_status'] = 'stopped'
-            phase5['generation_running'] = False
-            phase5['generation_end_time'] = datetime.now().isoformat()
-            return
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError   # ← добавь этот импорт вверху файла, если ещё нет
 
-        while self._should_pause and not self._should_stop:
-            return
+        while current_index < len(queue_list):
+            if self._stop_event.is_set():
+                return
 
-        # Получаем текущий промпт
-        prompt_id = phase5['generation_queue'][phase5['current_index']]
-        prompt = self.data_manager.get_prompt_by_id(prompt_id)
+            if self._pause_event.is_set():
+                time.sleep(0.5)
+                continue
 
-        if not prompt:
-            phase5['current_index'] += 1
-            return
+            prompt_id = queue_list[current_index]
+            prompt_data = prompts.get(prompt_id)
 
-        # Подготавливаем AI генератор
-        config_manager = st.session_state.ai_config_manager
-        ai_generator = AIGenerator(config_manager)
-        settings = phase5['generation_settings']
-        provider = settings['provider']
-        retry_count = settings['retry_count']
+            if not prompt_data:
+                current_index += 1
+                continue
 
-        # Генерация с повторными попытками
-        success = False
-        error_message = None
-        ai_response = None
-        model_used = None
-        tokens_used = 0
+            success = False
+            ai_response = None
+            model_used = None
+            tokens_used = 0
+            error_message = None
 
-        for attempt in range(retry_count):
-            try:
-                results = ai_generator.generate_instruction(
-                    prompt_template=prompt.get('prompt', ''),
-                    context={},
-                    provider=provider,
-                    num_variants=1,
-                    return_full_response=False
-                )
+            # ──────────────────────────────────────────────────────────────
+            # Вот этот блок — основной цикл попыток с таймаутом
+            for attempt in range(settings['retry_count']):
+                if self._stop_event.is_set():
+                    error_message = "Остановлено пользователем"
+                    success = False
+                    break
 
-                if results and results[0]['success']:
-                    ai_response = results[0]['text']
-                    model_used = results[0].get('model', '')
-                    tokens_used = results[0].get('usage', {}).get('total_tokens', 0)
+                if self._pause_event.is_set():
+                    # Пауза: ждём, пока не снимут паузу
+                    while self._pause_event.is_set() and not self._stop_event.is_set():
+                        time.sleep(0.3)
+
+                try:
+                    results = ai_generator.generate_instruction( ... )  # синхронно
+                    # обработка results
                     success = True
                     break
-                else:
-                    error_message = results[0].get('error',
-                                                   'Неизвестная ошибка ИИ') if results else 'Пустой ответ от ИИ'
+                except Exception as e:
+                    error_message = str(e)
+                    time.sleep(1.5)
 
-            except Exception as e:
-                error_message = str(e)
+            # ──────────────────────────────────────────────────────────────
 
-        # Сохраняем результат
-        result_data = {
-            'ai_response': self._clean_response(ai_response) if success else '',
-            'status': 'success' if success else 'error',
-            'model': model_used if success else '',
-            'provider': provider,
-            'tokens_used': tokens_used if success else 0,
-            'generated_at': datetime.now().isoformat(),
-            'error_message': error_message if not success else None,
-            'edited_text': self._clean_response(ai_response) if success else ''
-        }
+            result_data = {
+                'ai_response': self._clean_response(ai_response) if success else '',
+                'status': 'success' if success else 'error',
+                'model': model_used if success else '',
+                'provider': settings['provider'],
+                'tokens_used': tokens_used if success else 0,
+                'generated_at': datetime.now().isoformat(),
+                'error_message': error_message if not success else None,
+                'edited_text': self._clean_response(ai_response) if success else ''
+            }
 
-        self.data_manager.update_result(prompt_id, result_data)
-        phase5['current_index'] += 1
-        phase5['current_batch'] = phase5['current_index']
+            self._result_queue.put((prompt_id, result_data, current_index + 1))
 
-        # Если это был последний промпт
-        if phase5['current_index'] >= len(phase5['generation_queue']):
-            phase5['generation_status'] = 'completed'
-            phase5['generation_running'] = False
-            phase5['generation_end_time'] = datetime.now().isoformat()
+            current_index += 1
+            time.sleep(settings['delay_between_requests'])
 
-    def _clean_response(self, text):
-        """Очистка ответа ИИ от лишних кавычек и форматирования"""
-        if not text:
-            return ""
-
-        # Убираем обрамляющие кавычки если текст в них целиком
-        if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
-            text = text[1:-1]
-
-        # Заменяем множественные переносы строк
-        import re
-        text = re.sub(r'\n{3,}', '\n\n', text)
-
-        # Убираем лишние пробелы
-        text = text.strip()
-
-        return text
+        self._result_queue.put(("DONE", None, current_index))
 
     def pause_generation(self):
-        """Приостановить генерацию"""
-        if st.session_state.phase5['generation_status'] == 'running':
-            self._should_pause = True
-            st.session_state.phase5['generation_status'] = 'paused'
-            st.info("Генерация приостановлена")
-            return True
-        return False
+        self._pause_event.set()
+        st.session_state.phase5['generation_status'] = 'paused'
+        st.info("Пауза запрошена. Текущий промпт завершится, затем пауза.")
+        st.rerun()
 
     def resume_generation(self):
-        """Возобновить генерацию"""
-        if st.session_state.phase5['generation_status'] == 'paused':
-            self._should_pause = False
-            st.session_state.phase5['generation_status'] = 'running'
-            st.success("Генерация возобновлена")
-            st.rerun()
-            return True
-        return False
+        self._pause_event.clear()
+        st.session_state.phase5['generation_status'] = 'running'
+        st.success("Возобновлено")
+        st.rerun()
 
     def stop_generation(self):
-        """Остановить генерацию"""
-        self._should_stop = True
-        self._should_pause = False
-
-        if st.session_state.phase5['generation_status'] in ['running', 'paused']:
-            st.session_state.phase5['generation_status'] = 'stopped'
-            st.session_state.phase5['generation_running'] = False
-            st.session_state.phase5['generation_end_time'] = datetime.now().isoformat()
-            st.warning("Генерация остановлена")
-            return True
-        return False
-
+        self._stop_event.set()
+        st.session_state.phase5['generation_status'] = 'stopping'
+        st.warning("Остановка... ждём конца текущего запроса к модели")
+        st.rerun()
     def get_generation_progress(self):
-        """Получить прогресс генерации в процентах"""
         phase5 = st.session_state.phase5
-        if not phase5['generation_queue']:
+        if not phase5.get('generation_queue'):
             return 0
-
         return int((phase5['current_index'] / len(phase5['generation_queue'])) * 100)
+
+    def check_and_process_results(self):
+        updated = False
+        phase5 = st.session_state.phase5
+
+        while not self._result_queue.empty():
+            item = self._result_queue.get()
+            prompt_id, result_data, new_index = item
+
+            if prompt_id == "DONE":
+                phase5['generation_status'] = 'completed'
+                phase5['generation_running'] = False
+                phase5['generation_end_time'] = datetime.now().isoformat()
+                updated = True
+                continue
+
+            self.data_manager.update_result(prompt_id, result_data)
+            phase5['current_index'] = new_index
+            phase5['current_batch'] = new_index
+            updated = True
+
+        return updated
+
+    def _clean_response(self, text):
+        if not text:
+            return ""
+        if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+            text = text[1:-1]
+        import re
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
 
 # --- Компоненты интерфейса ---
@@ -1045,19 +1039,19 @@ class Phase5UIComponents:
                     generation_manager.start_generation()
 
         with col_btn2:
-            if status == 'running':
-                if st.button("⏸️ Пауза", key="pause_generation_phase5_btn"):
-                    generation_manager.pause_generation()
+            if st.button("⏸️ Пауза", key="pause_generation_phase5_btn"):
+                generation_manager.pause_generation()
+                st.rerun()
 
         with col_btn3:
-            if status == 'paused':
-                if st.button("▶️ Продолжить", key="resume_generation_phase5_btn"):
-                    generation_manager.resume_generation()
+            if st.button("▶️ Продолжить", key="resume_generation_phase5_btn"):
+                generation_manager.resume_generation()
+                st.rerun()
 
         with col_btn4:
-            if status in ['running', 'paused']:
-                if st.button("⏹️ Остановить", key="stop_generation_phase5_btn"):
-                    generation_manager.stop_generation()
+            if st.button("⏹️ Остановить", key="stop_generation_phase5_btn"):
+                generation_manager.stop_generation()
+                st.rerun()
 
         with col_btn5:
             if status in ['completed', 'stopped', 'error']:
@@ -1293,6 +1287,8 @@ class Phase5UIComponents:
 
 # --- Главная функция фазы 5 ---
 def main():
+    if 'ai_config_manager' not in st.session_state:
+        st.session_state.ai_config_manager = AIConfigManager()
     st.set_page_config(
         page_title="Data Harvester - Phase 5: Генерация текстов",
         layout="wide",
@@ -1307,10 +1303,21 @@ def main():
     ui = Phase5UIComponents()
 
     # Синхронизируем данные из потока при каждом рендере
-    if (st.session_state.phase5['generation_running'] and
-            st.session_state.phase5['generation_status'] == 'running'):
-        generation_manager.run_one_generation_step()
-        st.rerun()
+    # Обработка результатов из фонового потока
+    if 'generation_manager' not in st.session_state:
+        st.session_state.generation_manager = GenerationManager(data_manager)
+
+    generation_manager = st.session_state.generation_manager
+
+    # Обрабатываем накопившиеся результаты
+    generation_manager.check_and_process_results()
+
+    if generation_manager._worker_thread and generation_manager._worker_thread.is_alive():
+        status = st.session_state.phase5.get('generation_status', 'idle')
+        if status in ['running', 'paused', 'stopping']:
+            st.caption("Генерация идёт в фоне... (кнопки управления активны)")
+            time.sleep(0.5)  # было 0.8 → уменьшаем до 0.4–0.6
+            st.rerun()
 
     st.title("🚀 Фаза 5: Генерация текстовых блоков")
     st.markdown("---")

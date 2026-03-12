@@ -657,7 +657,14 @@ def main():
         # 3. Два блока настроек в две колонки (чтобы не растягивались)
     with st.sidebar:
         st.header("Загрузка данных")
-
+        with st.expander("Гайд"):
+            st.markdown("""
+                1. Выберите файл json для обработки (Browse files)
+                2. Для характеристик, которые не нужно делать переменной - поставить not var
+                3. Если у характеристики 0 товаров - 
+                3. Установите модель и параметры  
+                4. Запустите генерацию  
+                """)
         # Загрузка файла в sidebar
         uploaded_file = st.file_uploader(
             "📁 Загрузите JSON файл категории",
@@ -686,25 +693,7 @@ def main():
             on_change=update_global_top_n,
             help="Будет применён ко всем характеристикам в режиме 'Top N'"
         )
-        if st.session_state.get('raw_data') is not None:
-            st.markdown("---")
-            st.subheader("📊 Топ товаров по предложениям")
-            total_items = len(st.session_state.raw_data['Товары'])
-            top_n = st.number_input(
-                "Количество товаров",
-                min_value=1,
-                max_value=total_items,
-                value=min(3, total_items),
-                step=1,
-                key="top_goods_n"
-            )
-            top_text = format_top_goods(st.session_state.raw_data, top_n)
-            st.text_area(
-                "Товары для копирования",
-                value=top_text,
-                height=300,
-                key="top_goods_text"
-            )
+
 
     # 2. Если файл загружен — обрабатываем (логика из sidebar)
     if uploaded_file:
@@ -866,7 +855,7 @@ def main():
 
                 # 3) Чекбокс «Уникальная» (всегда виден)
                 with cols[2]:
-                    st.checkbox("Уникальная", key=f"uniq_{char_id}", help="Только уникальные значения")
+                    st.checkbox("Not var", key=f"uniq_{char_id}", help="Не делать переменной")
 
                 # 4) Режим и контролы (Все / Top N / Вручную)
                 with cols[3]:

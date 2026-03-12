@@ -13,7 +13,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import secrets
 from database import get_db, verify_password, hash_password
-
+import state_manager
 # Настройка логирования
 logging.basicConfig(
     filename='login_attempts.log',
@@ -297,19 +297,21 @@ def login_form():
             st.rerun()
         return
 
-    # Проверяем, не находимся ли мы в процессе 2FA (как было ранее)
+    # Проверяем, не находимся ли мы в процессе 2FA
     if "2fa_user" in st.session_state:
         # Этап ввода кода 2FA
         with st.form("2fa_form"):
             st.write(f"Введите код двухфакторной аутентификации для {st.session_state['2fa_user']['username']}")
             totp_code = st.text_input("Код из приложения", max_chars=6)
             submitted = st.form_submit_button("Подтвердить")
+
             if submitted:
                 success, msg, user = authenticate_user(
                     st.session_state['2fa_user']['username'],
                     st.session_state['2fa_password'],
                     totp_code
                 )
+
                 if success:
                     st.session_state["authenticated"] = True
                     st.session_state["user_id"] = user["id"]
@@ -317,12 +319,27 @@ def login_form():
                     st.session_state.pop("2fa_user", None)
                     st.session_state.pop("2fa_password", None)
                     st.success("Вход выполнен успешно!")
-                    from state_manager import save_user_state
-                    save_user_state()
-                    st.session_state.last_auto_save = datetime.now()
+
+                    user_key = f"user_{user['id']}"
+                    if user_key not in st.session_state:
+                        st.session_state[user_key] = {
+                            "current_phase": 1,
+                            "app_data": {
+                                'phase1': {}, 'phase2': {}, 'phase3': {},
+                                'phase4': {}, 'phase5': {}, 'phase6': {},
+                                'category': '', 'project_name': 'Новый проект'
+                            },
+                        }
+
+                    st.session_state.app_data = st.session_state[user_key]["app_data"]
+                    st.session_state.current_phase = st.session_state[user_key]["current_phase"]
+
+                    from state_manager import load_user_state
+                    load_user_state(user["id"])
                     st.rerun()
                 else:
                     st.error(msg)
+
         # Кнопка вернуться
         if st.button("← Назад"):
             st.session_state.pop("2fa_user", None)
@@ -335,20 +352,38 @@ def login_form():
         username = st.text_input("Имя пользователя")
         password = st.text_input("Пароль", type="password")
         submitted = st.form_submit_button("Войти")
+
         if submitted:
             success, msg, user = authenticate_user(username, password)
+
             if success:
-                st.session_state["authenticated"] = True
-                st.session_state["user_id"] = user["id"]
-                st.session_state["username"] = user["username"]
-                st.success("Вход выполнен успешно!")
+                st.session_state.authenticated = True
+                st.session_state.user_id = user["id"]
+                st.session_state.username = user["username"]
 
-                from state_manager import save_user_state
-                save_user_state()                     # ← обязательно здесь
-                st.session_state.last_auto_save = datetime.now()
+                user_key = f"user_{user['id']}"
+                if user_key not in st.session_state:
+                    st.session_state[user_key] = {
+                        "current_phase": 1,
+                        "app_data": {
+                            'phase1': {}, 'phase2': {}, 'phase3': {},
+                            'phase4': {}, 'phase5': {}, 'phase6': {},
+                            'category': '', 'project_name': 'Новый проект'
+                        },
+                    }
+
+                st.session_state.app_data = st.session_state[user_key]["app_data"]
+                st.session_state.current_phase = st.session_state[user_key]["current_phase"]
+
+                from state_manager import load_user_state
+                load_user_state(user["id"])
+
+                # Сохраняем состояние и user_id в URL
+                state_manager.save_user_state()
+                st.query_params["user_id"] = str(user["id"])
+
                 st.rerun()
 
-                st.rerun()
             elif msg == "REQUIRE_2FA":
                 # Запоминаем пользователя для второго этапа
                 st.session_state["2fa_user"] = user
@@ -361,7 +396,7 @@ def login_form():
         st.session_state["show_register"] = True
         st.rerun()
 
-        # Раздел восстановления пароля (как было)
+    # Раздел восстановления пароля
     with st.expander("Забыли пароль?"):
         email = st.text_input("Ваш email")
         if st.button("Отправить ссылку для сброса"):
@@ -372,9 +407,43 @@ def login_form():
 
 # -------------------- Выход --------------------
 def logout():
-    st.session_state["authenticated"] = False
-    st.session_state.pop("user_id", None)
-    st.session_state.pop("username", None)
+    print(f"=== LOGOUT === User {st.session_state.get('user_id')} logging out")
+
+    # Очищаем абсолютно всё, что связано с пользователем
+    user_id = st.session_state.get("user_id")
+
+    # Удаляем контейнер пользователя
+    if user_id:
+        user_key = f"user_{user_id}"
+        if user_key in st.session_state:
+            del st.session_state[user_key]
+
+    # Очищаем все ключи авторизации
+    keys_to_clear = [
+        "authenticated",
+        "user_id",
+        "username",
+        "app_data",
+        "current_phase",
+        "2fa_user",
+        "2fa_password",
+        "show_profile",
+        "show_admin_panel",
+        "show_ai_config",
+        "last_auto_save",
+        "last_saved_phase",
+        "session_restored",
+        "state_restored"
+    ]
+
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+
+    # Очищаем URL параметры
+    st.query_params.clear()
+
+    print("=== LOGOUT COMPLETE ===")
     st.rerun()
 
 # -------------------- Интерфейс профиля (смена пароля, 2FA) --------------------

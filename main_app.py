@@ -5,8 +5,10 @@ import os
 from datetime import datetime
 from styles import load_css
 import auth
+
 # --- CSS стили для всего приложения ---
 import state_manager
+
 st.set_page_config(
         page_title="Data Harvester Pro",
         layout="wide",
@@ -69,24 +71,7 @@ def local_css():
 
 # --- Класс для управления состоянием ---
 class AppState:
-    def __init__(self):
-        # Инициализация состояния приложения
-        if 'current_phase' not in st.session_state:
-            st.session_state.current_phase = 1
 
-        if 'app_data' not in st.session_state:
-            st.session_state.app_data = {
-                'phase1': {},
-                'phase2': {},
-                'phase3': {},  # Данные редактирования блоков (если нужно)
-                'phase4': {},
-                'phase5': {},
-                'phase6': {},# Данные генерации промптов
-                'category': '',
-                'project_name': 'Новый проект'
-            }
-        if 'phase6_auto_load' not in st.session_state:
-            st.session_state.phase6_auto_load = True
     def get_phase_data(self, phase):
         """Получает данные для указанной фазы"""
         return st.session_state.app_data.get(f'phase{phase}', {})
@@ -155,48 +140,101 @@ class AppState:
 # --- Главное приложение ---
 
 def main():
-    # ──────────────────────────────────────────────────────────────
-    # 1. Восстанавливаем авторизацию ИЗ ФАЙЛА САМОЕ ПЕРВОЕ ДЕЙСТВИЕ
-    # ──────────────────────────────────────────────────────────────
-    restored = False
-    if "session_restored" not in st.session_state:
-        # Пытаемся восстановить без проверки user_id заранее
-        # (если user_id ещё нет — функция должна это обработать)
-        restored = state_manager.load_user_state()
-        st.session_state.session_restored = True
+    # САМОЕ ПЕРВОЕ - проверяем URL параметры
+    query_params = st.query_params
+    import state_manager
+    # Если есть user_id в URL и нет активной сессии - пробуем загрузить
+    if "user_id" in query_params and not st.session_state.get("authenticated", False):
+        user_id = int(query_params["user_id"])
+        print(f"🔍 Found user_id in URL: {user_id}, attempting to load state")
 
-    # Отладка — сразу покажем, что получилось после попытки восстановления
-    st.write("DEBUG: после load_user_state() → authenticated =",
-             st.session_state.get("authenticated", False))
-    st.write("DEBUG: user_id =", st.session_state.get("user_id", "нет"))
-    st.write("DEBUG: username =", st.session_state.get("username", "нет"))
+        # Загружаем состояние
+        if state_manager.load_user_state(user_id):
+            print(f"✅ State loaded successfully for user {user_id}")
+            # Принудительно устанавливаем authenticated
+            st.session_state.authenticated = True
+            st.session_state.user_id = user_id
+        else:
+            print(f"❌ Failed to load state for user {user_id}")
+            st.query_params.clear()
 
-    # 2. Если всё ещё не авторизован — показываем форму
+    # Проверка авторизации
     if not st.session_state.get("authenticated", False):
+        print("Not authenticated, showing login form")
         auth.login_form()
         return
 
-    # 3. Здесь уже авторизован — проверяем approved
-    try:
-        with auth.get_db() as conn:
-            user_status = conn.execute(
-                "SELECT status FROM users WHERE id = ?",
-                (st.session_state["user_id"],)
-            ).fetchone()
-            if not user_status or user_status["status"] != "approved":
-                st.error("Ваш доступ отозван...")
-                auth.logout()
-                return
-    except Exception as e:
-        st.error(f"Ошибка проверки доступа: {e}")
+    # Финальная проверка - есть ли user_id в сессии
+    if "user_id" not in st.session_state:
+        print("ERROR: Authenticated but no user_id!")
         auth.logout()
         return
 
-    # 4. Тост только если восстановили из файла
-    if restored:
-        st.toast("Сессия восстановлена из файла", icon="🔄")
+    print(f"✅ Authenticated as user {st.session_state['user_id']}, continuing to main app")
+    if 'app_data' in st.session_state:
+        app_data = st.session_state.app_data
 
+        # Синхронизируем phase1_data
+        if 'phase1' in app_data and app_data['phase1']:
+            st.session_state.phase1_data = app_data['phase1']
+            print("🔄 Synced phase1_data")
 
+        # Синхронизируем phase2_data/markers
+        if 'phase2' in app_data and app_data['phase2']:
+            st.session_state.phase2_data = app_data['phase2']
+            if 'markers' in app_data['phase2']:
+                st.session_state.phase2_markers = app_data['phase2']['markers']
+                st.session_state.markers_data = app_data['phase2']['markers']
+            print("🔄 Synced phase2_data")
+
+        # Синхронизируем phase3_data
+        if 'phase3' in app_data and app_data['phase3']:
+            st.session_state.phase3_data = app_data['phase3']
+            print("🔄 Synced phase3_data")
+
+        # Синхронизируем category
+        if 'category' in app_data and app_data['category']:
+            st.session_state.category_name = app_data['category']
+            st.session_state.selected_category = app_data['category']
+            print(f"🔄 Synced category: {app_data['category']}")
+
+    # Также восстанавливаем контейнер пользователя если нужно
+    user_key = f"user_{st.session_state['user_id']}"
+    if user_key in st.session_state:
+        container = st.session_state[user_key]
+        if 'app_data' in container:
+            # Если в контейнере есть данные, но нет в основных ключах
+            if not st.session_state.get('phase1_data') and 'phase1' in container['app_data']:
+                st.session_state.phase1_data = container['app_data']['phase1']
+    # Убеждаемся что user_id есть в URL
+    if "user_id" not in st.query_params:
+        st.query_params["user_id"] = str(st.session_state["user_id"])
+    print("\n🔍 DEBUG: Checking data after authentication:")
+    print(f"📊 current_phase: {st.session_state.get('current_phase')}")
+    print(f"📊 app_data keys: {list(st.session_state.get('app_data', {}).keys())}")
+    print(f"📊 phase1 exists: {'phase1' in st.session_state.get('app_data', {})}")
+    if 'phase1' in st.session_state.get('app_data', {}):
+        print(f"📊 phase1 category: {st.session_state.app_data['phase1'].get('category', 'N/A')}")
+        print(f"📊 phase1 characteristics: {len(st.session_state.app_data['phase1'].get('characteristics', []))}")
+
+    # Проверяем контейнер пользователя
+    user_key = f"user_{st.session_state['user_id']}"
+    if user_key in st.session_state:
+        print(f"📊 container {user_key} exists")
+        print(f"📊 container phase: {st.session_state[user_key].get('current_phase')}")
+        print(f"📊 container app_data keys: {list(st.session_state[user_key].get('app_data', {}).keys())}")
+    else:
+        print(f"❌ container {user_key} NOT found!")
+    user_key = f"user_{st.session_state['user_id']}"
+    if user_key in st.session_state:
+        container = st.session_state[user_key]
+
+        # Если в основных ключах нет данных, но есть в контейнере - восстанавливаем
+        if not st.session_state.get('app_data') or not st.session_state.app_data.get('phase1'):
+            print("⚠️ Основные ключи пусты, восстанавливаем из контейнера")
+            st.session_state.current_phase = container.get('current_phase', 1)
+            st.session_state.app_data = container.get('app_data', {})
+            print(f"✅ Восстановлено: phase1 exists: {'phase1' in st.session_state.app_data}")
     # ─── Дальше идёт весь остальной код приложения ───
     load_css()
 
@@ -331,6 +369,32 @@ def main():
 
             # Маленькая кнопка перехода без растяжения
             if st.button("▶", key=f"phase_{i}"):
+            # Сохраняем ТОЛЬКО нужные данные перед переходом
+                if "user_id" in st.session_state:
+                    user_id = st.session_state.user_id
+                    user_key = f"user_{user_id}"
+
+                    # Обновляем app_data из всех источников
+                    if 'phase1_data' in st.session_state:
+                        st.session_state.app_data['phase1'] = st.session_state.phase1_data
+                    if 'phase2_data' in st.session_state:
+                        st.session_state.app_data['phase2'] = st.session_state.phase2_data
+                    if 'phase2_markers' in st.session_state:
+                        if 'phase2' not in st.session_state.app_data:
+                            st.session_state.app_data['phase2'] = {}
+                        st.session_state.app_data['phase2']['markers'] = st.session_state.phase2_markers
+                    if 'category_name' in st.session_state:
+                        st.session_state.app_data['category'] = st.session_state.category_name
+
+                    # Обновляем контейнер пользователя
+                    if user_key in st.session_state:
+                        st.session_state[user_key]['app_data'] = st.session_state.app_data
+                        st.session_state[user_key]['current_phase'] = i
+
+                    # Сохраняем в файл ТОЛЬКО основные данные
+                    from state_manager import save_user_state
+                    save_user_state()
+
                 st.session_state.current_phase = i
                 st.rerun()
 
@@ -448,6 +512,24 @@ def main():
     with col_nav1:
         if st.session_state.current_phase > 1:
             if st.button("← Предыдущая фаза"):
+                # Сохраняем перед переходом
+                if "user_id" in st.session_state:
+                    # Обновляем данные из отдельных ключей в app_data
+                    if 'phase1_data' in st.session_state:
+                        st.session_state.app_data['phase1'] = st.session_state.phase1_data
+                    if 'phase2_data' in st.session_state:
+                        st.session_state.app_data['phase2'] = st.session_state.phase2_data
+                    if 'phase2_markers' in st.session_state:
+                        if 'phase2' not in st.session_state.app_data:
+                            st.session_state.app_data['phase2'] = {}
+                        st.session_state.app_data['phase2']['markers'] = st.session_state.phase2_markers
+                    if 'category_name' in st.session_state:
+                        st.session_state.app_data['category'] = st.session_state.category_name
+
+                    # ИМПОРТИРУЕМ state_manager и сохраняем
+                    import state_manager
+                    state_manager.save_user_state()
+
                 st.session_state.current_phase -= 1
                 st.rerun()
 
@@ -461,7 +543,6 @@ def main():
         elif current == 2:
             can_proceed = bool(app_state.get_phase_data(1) and app_state.get_phase_data(2))
         elif current == 3:
-            # Фаза 3 считается выполненной, если есть папка blocks с файлами
             blocks_dir = Path("blocks")
             has_blocks = blocks_dir.exists() and any(blocks_dir.iterdir())
             can_proceed = has_blocks
@@ -470,32 +551,40 @@ def main():
         elif current == 5:
             can_proceed = bool(app_state.get_phase_data(1) and app_state.get_phase_data(2) and app_state.get_phase_data(4) and app_state.get_phase_data(5))
         elif current == 6:
-            can_proceed = bool(app_state.get_phase_data(5))  # для фазы 6 достаточно данных из 5
+            can_proceed = bool(app_state.get_phase_data(5))
 
         if current < 6:
             if can_proceed:
                 if st.button("Следующая фаза →", type="primary"):
+                    # Сохраняем перед переходом
+                    if "user_id" in st.session_state:
+                        # Обновляем данные из отдельных ключей в app_data
+                        if 'phase1_data' in st.session_state:
+                            st.session_state.app_data['phase1'] = st.session_state.phase1_data
+                        if 'phase2_data' in st.session_state:
+                            st.session_state.app_data['phase2'] = st.session_state.phase2_data
+                        if 'phase2_markers' in st.session_state:
+                            if 'phase2' not in st.session_state.app_data:
+                                st.session_state.app_data['phase2'] = {}
+                            st.session_state.app_data['phase2']['markers'] = st.session_state.phase2_markers
+                        if 'category_name' in st.session_state:
+                            st.session_state.app_data['category'] = st.session_state.category_name
+
+                        import state_manager
+                        state_manager.save_user_state()
+
                     st.session_state.current_phase += 1
                     st.rerun()
             else:
                 st.info("⚠️ Завершите текущую фазу, чтобы перейти дальше")
+    # Автосохранение каждые 30–60 сек или при смене фазы
     now = datetime.now()
-
     if "last_auto_save" not in st.session_state:
         st.session_state.last_auto_save = now
 
-    delta = (now - st.session_state.last_auto_save).total_seconds()
-    if delta > 75:  # 75 секунд — комфортный баланс
+    if (now - st.session_state.last_auto_save).total_seconds() > 5:
         state_manager.save_user_state()
         st.session_state.last_auto_save = now
-
-    # Дополнительно: сохраняем при смене фазы (очень полезно!)
-    if "previous_phase" not in st.session_state:
-        st.session_state.previous_phase = st.session_state.current_phase
-
-    if st.session_state.current_phase != st.session_state.previous_phase:
-        state_manager.save_user_state()
-        st.session_state.previous_phase = st.session_state.current_phase
     # =================================================
 
 if __name__ == "__main__":
